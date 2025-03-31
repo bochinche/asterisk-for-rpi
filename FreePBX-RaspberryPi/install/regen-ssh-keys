@@ -1,0 +1,35 @@
+#!/bin/bash
+
+if [ $(id -u) -ne 0 ]; then
+  echo ""
+  echo "Must be run as root user: sudo $0"
+  echo ""
+  exit 1
+fi
+
+echo ""
+modinfo bcm2708-rng &> /dev/null
+if [ $? -eq 0 ]; then
+  echo "BCM2708 H/W Random Number Generator (RNG) driver is installed"
+  modprobe bcm2708-rng
+  if [ `grep -c bcm2708-rng /etc/modules` -eq 0 ]; then
+    echo "bcm2708-rng" >> /etc/modules
+  fi
+else
+  echo "BCM2708 H/W Random Number Generator (RNG) driver is not installed"
+fi
+dpkg -s rng-tools &> /dev/null
+INSTALLED=$?  
+echo "Ensuring rng-tools is installed"
+apt-get -y update
+apt-get -y install rng-tools > /dev/null
+if [ ${INSTALLED} -ne 0 ]; then
+  echo "Waiting while system entropy pool is replenished"
+  sleep 15
+fi
+echo "Regenerating SSH keys"
+rm /etc/ssh/ssh_host_*
+dpkg-reconfigure openssh-server
+echo "Restarting SSH service"
+service ssh restart
+echo ""

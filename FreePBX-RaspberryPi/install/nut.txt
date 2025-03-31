@@ -1,0 +1,42 @@
+Network UPS Tools (NUT) is a package for monitoring an Uninterruptible Power Supply (UPS)
+and performing an orderly shutdown of one or more computers should the UPS battery
+approach depletion during a power outage.
+
+NUT can be installed as a Server or a Client.
+A NUT Server is used on the computer to which the UPS is connected via USB.
+A NUT Client is used on a computer connected to the same network as the NUT Server.
+
+install-nut will install and configure NUT on either a Server or Client computer running Linux.
+During installation, you must supply a Server password.  For Client installations,
+you must also provide the IP address of the NUT Server computer.
+Two scripts will be created in /root: ups-info and ups-ctrl.
+
+ups-info will display information about the UPS:
+
+root@FreePBX:~# ./ups-info
+
+UPS model number: CP1350PFCLCD
+
+Input power source: AC Power Line
+
+Estimated run time: 102 minutes
+
+Battery charged to: 100 percent
+
+ups-ctrl allows commands to be sent to the UPS:
+
+root@FreePBX:~# ./ups-ctrl
+
+a) Alarm Mute
+b) Alarm Enable
+c) Alarm Disable
+d) Battery Test Start
+e) Battery Test Stop
+f) Battery Test Auto
+UPS Command?
+
+remove-nut will completely remove NUT and all of its configuration files.
+
+Additional information can be found in NUT.pdf and at:
+
+https://networkupstools.org/

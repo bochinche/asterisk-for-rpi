@@ -1,0 +1,41 @@
+#!/bin/bash
+
+# Import blacklisted numbers
+
+if [ "$1" = "" ]; then
+  echo ""
+  echo "Usage: $0 phone-numbers-filename"
+  echo ""
+  exit 1
+fi
+
+if [ ! -e $1 ] || [ ! -s $1 ]; then
+  echo ""
+  echo "$1 is missing or empty"
+  echo ""
+  exit 1
+fi
+
+echo ""
+echo -n "Import $1 to Asterisk blacklist (y/n)? "
+while read -r -n 1 -s answer; do
+  if [[ ${answer} = [yYnN] ]]; then
+    echo "${answer}"
+    if [[ ${answer} = [yY] ]]; then
+      break
+    else
+      echo ""
+      echo "Aborted"
+      echo ""
+      exit 1
+    fi
+  fi
+done
+
+echo ""
+echo "Adding blacklist numbers:"
+while read number; do
+  echo -n "${number} : "
+  asterisk -rx "database put blacklist ${number} 1"
+done < $1
+echo ""

@@ -1,0 +1,44 @@
+#!/bin/bash
+
+if [ -e /etc/zram ]; then
+  echo ""
+  echo "ZRAM already installed"
+  echo ""
+  exit 1
+fi
+echo ""
+echo -n "Install ZRAM (y/n)? "
+while read -r -n 1 -s answer; do
+  if [[ ${answer} = [yYnN] ]]; then
+    echo "${answer}"
+    if [[ ${answer} = [yY] ]]; then
+      break
+    else
+      echo ""
+      echo "Aborted"
+      echo ""
+      exit 1
+    fi
+  fi
+done
+cat <<\EOF > /etc/zram
+#!/bin/bash
+
+CORES=$(nproc --all)
+modprobe zram num_devices=${CORES}
+swapoff -a
+SIZE=$(( ($(free | grep -e "^Mem:" | awk '{print $2}') / ${CORES}) * 1024 ))
+CORE=0
+while [ ${CORE} -lt ${CORES} ]; do
+  echo ${SIZE} > /sys/block/zram${CORE}/disksize
+  mkswap /dev/zram${CORE} > /dev/null
+  swapon -p 5 /dev/zram${CORE}
+  (( CORE += 1 ))
+done
+EOF
+chmod +x /etc/zram
+/etc/zram
+if [ $(grep -c zram /etc/rc.local) -eq 0 ]; then
+  sed -i 's_^exit 0$_/etc/zram\nexit 0_' /etc/rc.local
+fi
+echo ""

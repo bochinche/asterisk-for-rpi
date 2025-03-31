@@ -1,0 +1,14 @@
+#!/bin/bash
+
+# Query blacklist number
+
+if [ "$1" = "" ]; then
+  echo ""
+  echo "Usage: $0 phone-number"
+  echo ""
+  exit 1
+fi
+
+echo ""
+asterisk -rx "database show blacklist/$1"
+echo ""

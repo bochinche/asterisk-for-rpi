@@ -1,0 +1,129 @@
+#!/bin/bash
+
+IAXCONFIGPATH=/etc/iaxmodem/ttyI
+HYLAFAXCONFIGPATH=/etc/hylafax/config.ttyI
+FAXDISPATCHFILE=/etc/hylafax/FaxDispatch
+SYSTEMDFILE=/etc/systemd/system/faxgetty
+DELEXTSCRIPT=/tmp/deleteext.php
+
+while :
+do
+  echo ""
+  echo -n "Extension number: "
+  read -r EXTENSION
+  if [[ "${EXTENSION}" =~ ^[0-9]+{2,}$ ]]; then
+    break
+  fi
+  echo ""
+  echo "Extension number must be at least 2 digits"
+done
+
+echo ""
+echo -n "Ok to delete extension ${EXTENSION} (y/n)? "
+while read -r -n 1 -s answer; do
+  if [[ ${answer} = [yYnN] ]]; then
+    echo "${answer}"
+    if [[ ${answer} = [yY] ]]; then
+      break
+    else
+      echo ""
+      echo "Aborted"
+      echo ""
+      exit 1
+    fi
+  fi
+done
+echo ""
+
+if [ -f "${IAXCONFIGPATH}${EXTENSION}" ]; then
+  rm "${IAXCONFIGPATH}${EXTENSION}"
+  echo "${IAXCONFIGPATH}${EXTENSION} deleted"
+fi
+
+if [ -f "${HYLAFAXCONFIGPATH}${EXTENSION}" ]; then
+  rm "${HYLAFAXCONFIGPATH}${EXTENSION}"
+  echo "${HYLAFAXCONFIGPATH}${EXTENSION} deleted"
+fi
+
+if [ -f "${FAXDISPATCHFILE}" ]; then
+  if [ `grep -c ttyI${EXTENSION} ${FAXDISPATCHFILE}` -ne 0 ]; then
+    sed -i "/ttyI${EXTENSION}/,+2d" ${FAXDISPATCHFILE}
+    if [ `grep -c ttyI ${FAXDISPATCHFILE}` -ne 0 ]; then
+      echo "${FAXDISPATCHFILE} updated"
+    else
+      rm "${FAXDISPATCHFILE}"
+      echo "${FAXDISPATCHFILE} deleted"
+    fi
+  fi
+fi
+
+if [ -f "${SYSTEMDFILE}${EXTENSION}.service" ]; then
+  service faxgetty${EXTENSION} stop
+  systemctl disable faxgetty${EXTENSION}
+  rm "${SYSTEMDFILE}${EXTENSION}.service"
+  echo "${SYSTEMDFILE}${EXTENSION}.service deleted"
+fi
+
+echo ""
+/etc/init.d/iaxmodem start
+/etc/init.d/iaxmodem restart
+kill -HUP 1
+/etc/init.d/hylafax restart
+
+# Create 'Delete FreePBX Extension' Script
+cat <<\EOF > "${DELEXTSCRIPT}"
+#!/usr/bin/php
+
+<?php
+
+if (isset($argv[1]))
+{
+  include '/etc/freepbx.conf';
+
+  $FreePBX = FreePBX::Create();
+  $device=$FreePBX->Core->getDevice($argv[1]);
+  $user=$FreePBX->Core->getUser($argv[1]);
+
+  if($device["user"])  // normal extension
+  {
+    $FreePBX->Core->delDevice($argv[1]);
+    $FreePBX->Core->delUser($device["user"]);
+    exit(0);
+  }
+  elseif ($user)  // virtual extension
+  {
+    $FreePBX->Core->delUser($argv[1]);
+    exit(0);
+  }
+  else  // invalid extension
+  {
+    exit(1);
+  }
+}
+else  // no extension
+{
+  exit(2);
+}
+
+?>
+EOF
+if [ $? -ne 0 ]; then
+  echo ""
+  echo "Unable to create ${DELEXTSCRIPT}"
+  echo ""
+  exit 1
+fi
+chmod +x ${DELEXTSCRIPT}
+
+${DELEXTSCRIPT} ${EXTENSION}
+if [ $? -eq 0 ]; then
+  fwconsole reload
+  echo ""
+  echo "Extension ${EXTENSION} has been deleted from FreePBX"
+else
+  echo "Unable to delete extension ${EXTENSION} from FreePBX"
+  echo ""
+  echo "Delete extension ${EXTENSION} from FreePBX manually"
+fi
+rm ${DELEXTSCRIPT}
+echo ""

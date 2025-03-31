@@ -1,0 +1,15 @@
+#!/bin/bash
+
+dpkg-reconfigure tzdata
+
+PHPDIR="$(ls -d /etc/php/* | sed -n 's|^/etc/php/\(.*\)|\1|p')"
+if [ -f /etc/php/${PHPDIR}/apache2/php.ini ] && [ -f /etc/php/${PHPDIR}/cli/php.ini ]; then
+  TIMEZONE="$(cat /etc/timezone)"
+  echo "Setting PHP to system timezone: $TIMEZONE"
+  echo ""
+  sed -i "s|.*date\.timezone =.*|date.timezone = \"$TIMEZONE\"|" /etc/php/${PHPDIR}/apache2/php.ini
+  sed -i "s|.*date\.timezone =.*|date.timezone = \"$TIMEZONE\"|" /etc/php/${PHPDIR}/cli/php.ini
+  echo "Restarting PHP"
+  echo ""
+  systemctl restart apache2
+fi

@@ -1,0 +1,123 @@
+#!/bin/bash
+
+if command -v systemctl > /dev/null && systemctl | grep -q '\-\.mount'; then
+  SYSTEMD=1
+elif [ -f /etc/init.d/cron ] && [ ! -h /etc/init.d/cron ]; then
+  SYSTEMD=0
+else
+  echo ""
+  echo "Unrecognized init system"
+  echo ""
+  exit 1
+fi
+
+if [ "$1" = "" ]; then
+  echo ""
+  echo "Usage: $0 IP Address | Fully Qualified Domain Name"
+  echo ""
+  exit 1
+fi
+if [[ "$1" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+  IP=$1
+  OIFS=${IFS}
+  IFS='.'
+  IP=(${IP})
+  IFS=${OIFS}
+  if [[ ${IP[0]} -gt 255 || ${IP[1]} -gt 255 || ${IP[2]} -gt 255 || ${IP[3]} -gt 255 ]]; then
+    echo ""
+    echo "Invald IP Address: $1"
+    echo ""
+    exit 1
+  fi
+  IP=$1
+  FQDN=""
+else
+  FQDN="$(tr [A-Z] [a-z] <<< "$1")"
+fi
+if [ ! -s /etc/iptables/ipt-dat ]; then
+  echo ""
+  echo "No rules available to remove"
+  echo ""
+  exit 1
+fi
+FLAG=0
+while read DATIP DATFQDN; do
+  if [ "${FQDN}" = "" ]; then
+    if [[ "${DATFQDN}" = "" && "${IP}" = "${DATIP}" ]]; then
+      MATCH="ipt-add : ${IP}"
+      FLAG=1
+      break
+    fi
+  else
+    if [ "${FQDN}" = "${DATFQDN}" ]; then
+      IP="${DATIP}"
+      MATCH="ipt-add : ${FQDN}"
+      FLAG=1
+      break
+    fi
+  fi
+done < /etc/iptables/ipt-dat
+if [ ${FLAG} -eq 0 ]; then
+  echo ""
+  if [ "${FQDN}" = "" ]; then
+    echo -n "IP Address"
+  else
+    echo -n "Fully Qualified Domain Name"
+  fi
+  echo " not found: $1"
+  echo ""
+  exit 1
+fi
+clear
+echo ""
+echo "Rules to be removed from iptables:"
+echo ""
+grep "${MATCH}" /etc/iptables/rules.v4 | grep -o -e "^.*ACCEPT"
+echo ""
+echo -n "Update iptables now (y/n)? "
+while read -r -n 1 -s answer; do
+  if [[ ${answer} = [yYnN] ]]; then
+    echo "${answer}"
+    if [[ ${answer} = [yY] ]]; then
+      break
+    else
+      echo ""
+      echo "Aborted"
+      echo ""
+      exit 1
+    fi
+  fi
+done
+sed -i "/${MATCH}/d" /etc/iptables/rules.v4
+if [ "${FQDN}" = "" ]; then
+  sed -i "/^${IP}$/d" /etc/iptables/ipt-dat
+else
+  sed -i "/^${IP} ${FQDN}$/d" /etc/iptables/ipt-dat
+fi
+if [ ! -s /etc/iptables/ipt-dat ]; then
+  rm /etc/iptables/ipt-dat
+fi
+while :
+do
+  if [ ${SYSTEMD} -eq 1 ]; then
+    invoke-rc.d netfilter-persistent restart &> /dev/null
+    STATUS=`systemctl status netfilter-persistent.service | tail -1 | grep "failed"`
+  else
+    STATUS=`service iptables restart | grep "fail"`
+  fi
+  if [ "${STATUS}" = "" ]; then
+    echo ""
+    echo "iptables successfully restarted"
+    echo ""
+    break
+  fi
+  iptables-restore /etc/iptables/rules.v4 2> /tmp/ipt-err
+  ERROR=`cat /tmp/ipt-err`
+  if [[ "${ERROR}" == *Error* ]]; then
+    LINE=`cat /tmp/ipt-err | cut -f 2 -d ":" | tail -2 | head -n 1 | tr -d ' '`
+    sed -i "${LINE} s/^/# Error: /" /etc/iptables/rules.v4
+    echo ""
+    cat /tmp/ipt-err | head -n -1
+  fi
+  rm /tmp/ipt-err
+done

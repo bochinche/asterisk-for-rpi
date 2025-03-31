@@ -1,0 +1,53 @@
+[gvsip1]
+type=transport
+protocol=flow
+method=tlsv1_2
+
+[gvsip1]
+type=registration
+outbound_auth=gvsip1
+server_uri=sip:obihai.sip.google.com
+outbound_proxy=sip:obihai.telephony.goog:5061\;transport=tls\;lr\;hide
+client_uri=sip:gvsNNNNNNNNNN@obihai.sip.google.com
+retry_interval=60
+fatal_retry_interval=30
+forbidden_retry_interval=30
+max_retries=10000
+auth_rejection_permanent=no
+expiration=3600
+support_path=yes
+support_outbound=yes
+contact_header_params=obn={Google Voice SIP Name}
+line=yes
+endpoint=gvsip1
+transport=gvsip1
+contact_user=NNNNNNNNNN
+
+[gvsip1]
+type=auth
+auth_type=google_oauth
+refresh_token={Google Voice Refresh Token}
+oauth_clientid={Google Voice Client ID}
+oauth_secret={Google Voice Client Secret}
+username=gvsNNNNNNNNNN
+realm=obihai.sip.google.com
+
+[gvsip1]
+type=aor
+qualify_frequency=60
+contact=sip:obihai.sip.google.com
+
+[gvsip1]
+type=endpoint
+context=from-pstn-e164-us
+disallow=all
+allow=ulaw
+allow=opus
+outbound_auth=gvsip1
+outbound_proxy=sip:obihai.telephony.goog:5061\;transport=tls\;lr\;hide
+aors=gvsip1
+direct_media=no
+ice_support=yes
+rtcp_mux=yes
+media_use_received_transport=yes
+transport=gvsip1

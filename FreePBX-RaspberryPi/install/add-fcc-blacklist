@@ -1,0 +1,71 @@
+#!/bin/bash
+
+FN="Telemarketing_RoboCall_Data.csv"
+URL="https://opendata.fcc.gov/api/views/3xyp-aqkj/rows.csv?accessType=DOWNLOAD"
+ACT=( "|" "/" "-" "\\" )
+
+if [ "$1" != "cron" ]; then
+  echo ""
+  echo -n "Add current FCC blacklist to Asterisk (y/n)? "
+  while read -r -n 1 -s answer; do
+    if [[ ${answer} = [yYnN] ]]; then
+      echo "${answer}"
+      if [[ ${answer} = [yY] ]]; then
+        break
+      else
+        echo ""
+        echo "Aborted"
+        echo ""
+        exit 1
+      fi
+    fi
+  done
+fi
+
+echo ""
+echo "Downloading ${FN}"
+wget -q --no-check-certificate -O ${FN} ${URL}
+if [ $? -ne 0 ]; then
+  echo ""
+  echo "Error downloading ${URL}"
+  echo ""
+  exit 1
+fi
+echo ""
+echo "Extracting and sorting phone numbers"
+cat ${FN} | awk -F "," '{print $8 "\n" $10}' | sort -u | grep "[0-9][0-9][0-9]-[0-9][0-9][0-9]-[0-9][0-9][0-9][0-9]" | sed "s|-||g" > blacklist
+rm ${FN}
+echo ""
+echo "Deleting existing FCC blacklist from Asterisk"
+asterisk -rx 'database query "delete from astdb WHERE KEY LIKE \"/blacklist%\" AND value = \"FCC\" "'
+echo ""
+echo "Adding current FCC blacklist to Asterisk"
+DISPNDX=0
+COUNTER=0
+echo -n "     "
+while read NBR; do
+  asterisk -rx "database put blacklist ${NBR} FCC" > /dev/null
+  if [ "$1" != "cron" ]; then
+    if (( ${COUNTER} % 10 == 0 )); then
+      echo -n -e "\b\b\b \b\b\b"
+      echo -n "  ${ACT[(( DISPNDX & 0x03 ))]}  "
+      (( DISPNDX += 1 ))
+    fi
+  fi
+  (( COUNTER += 1 ))
+done < blacklist
+echo -n -e "\b\b\b \b\b\b"
+rm blacklist
+if [[ -f exclusions.fcc && -s exclusions.fcc ]]; then
+  echo ""
+  echo "Removing excluded numbers:"
+  while read number; do
+    echo -n "${number} : "
+    number=$(cut -f 1 -d ' ' <<< ${number})
+    asterisk -rx "database deltree blacklist ${number}"
+    (( COUNTER -= 1 ))
+  done < exclusions.fcc
+fi
+echo ""
+echo "Current FCC blacklist added to Asterisk (${COUNTER} entries)"
+echo ""

@@ -1,0 +1,38 @@
+#!/bin/bash
+
+# Export blacklisted numbers
+
+if [ "$1" = "" ]; then
+  echo ""
+  echo "Usage: $0 phone-numbers-filename"
+  echo ""
+  exit 1
+fi
+
+if [ -e $1 ]; then
+  if [ -d $1 ]; then
+    echo ""
+    echo "$1 is a directory"
+    echo ""
+    exit 1
+  else
+    echo ""
+    echo -n "$1 already exists, overwrite (y/n)? "
+    while read -r -n 1 -s answer; do
+      if [[ ${answer} = [yYnN] ]]; then
+        echo "${answer}"
+        if [[ ${answer} = [yY] ]]; then
+          break
+        else
+          echo ""
+          echo "Aborted"
+          echo ""
+          exit 1
+        fi
+      fi
+    done
+  fi
+fi
+
+asterisk -rx 'database query "select * from astdb WHERE KEY LIKE \"/blacklist%\" AND value = \"1\" "' | grep "key  : /blacklist/" | cut -b 19- | sed 's/[ ]*$//' | sort > $1
+echo ""

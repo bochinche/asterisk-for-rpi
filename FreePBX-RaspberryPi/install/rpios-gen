@@ -1,0 +1,482 @@
+#!/bin/bash
+
+trap '{ stty sane; echo ""; errexit "Aborted"; }' SIGINT SIGTERM
+
+errexit()
+{
+  echo ""
+  echo "$1"
+  echo ""
+  exit 1
+}
+
+dispyn()
+{
+  local PROMPT
+  local VALUE
+
+  PROMPT=$1
+  VALUE=$2
+  echo -n "${PROMPT}: "
+  if [ "${VALUE}" = "TRUE" ]; then
+    echo "yes"
+  else
+    echo "no"
+  fi
+}
+
+instpkgs()
+{
+  local i
+  local PKGS
+
+  PKGS=("$@")
+  for i in ${!PKGS[@]}; do
+    dpkg -s "${PKGS[i]}" &> /dev/null
+    if [ $? -eq 0 ]; then
+      unset PKGS[i]
+    fi
+  done
+  if [ ${#PKGS[@]} -ne 0 ]; then
+    echo ""
+    echo -n "Ok to install ${PKGS[@]} (y/n)? "
+    while read -r -n 1 -s answer; do
+      if [[ ${answer} = [yYnN] ]]; then
+        echo "${answer}"
+        if [[ ${answer} = [nN] ]]; then
+          errexit "Aborted"
+        fi
+        break
+      fi
+    done
+    echo ""
+    apt-get -y update
+    apt-get -y install "${PKGS[@]}"
+  fi
+}
+
+usage()
+{
+  cat <<EOF
+
+Usage: $0 [options] [output directory]
+-a,--architecture    Architecture to use:
+   arm64             64-bit
+   armhf             32-bit
+-c,--compression     Compression to use:
+   none              .img
+   zip               .zip
+   gz                .img.gz
+   xz                .img.xz
+-d,--delete          Delete existing generation files
+-h,--help            This usage description
+-i,--interactive     Interactive shell before generation
+-k,--comp-level      Compression level (0-9)
+-o,--output          Output to generate
+   lite              Raspberry Pi OS Lite
+   desktop           Raspberry Pi OS Desktop
+   full              Raspberry Pi OS Full
+   all               Lite, Desktop, and Full
+-p,--purge           Purge generation files upon completion
+-s,--ssh             Enable SSH access
+-u,--unattended      Unattended operation, defaults:
+   Architecture = arm64
+   Compression = zip
+   Comp-Level = 6
+   Delete = no
+   Interactive = no
+   Output = all
+   Purge = no
+   SSH = no
+-z,--user-pwd        Set username:password
+
+EOF
+}
+
+if [ $(id -u) -ne 0 ]; then
+  errexit "Must be run as root user: sudo $0"
+fi
+PGMNAME="$(basename $0)"
+for PID in $(pidof -x -o %PPID "${PGMNAME}"); do
+  if [ ${PID} -ne $$ ]; then
+    errexit "${PGMNAME} is already running"
+  fi
+done
+CURDIR="$(pwd)"
+if [ "${SUDO_USER}" != "" ]; then
+  REALUSER="${SUDO_USER}"
+else
+  REALUSER="$(whoami)"
+fi
+ARCH=""
+COMPRESSION=""
+COMPRESSION_LEVEL=""
+DELETE=FALSE
+INTERACTIVE=FALSE
+OUTPUT=""
+PASSWORD=""
+PURGE=FALSE
+SSH=FALSE
+UNATND=FALSE
+USERNAME=""
+OUTDIR=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+
+    -a|--architecture)
+      ARCH="$2"
+      if [[ "${ARCH}" != "arm64" && "${ARCH}" != "armhf" ]]; then
+        errexit "Invalid architecture: ${ARCH}"
+      fi
+      shift 2
+      ;;
+
+    -c|--compression)
+      COMPRESSION="$2"
+      if [[ "${COMPRESSION}" != "none" && "${COMPRESSION}" != "zip" && "${COMPRESSION}" != "gz" && "${COMPRESSION}" != "xz" ]]; then
+        errexit "Invalid compression: ${COMPRESSION}"
+      fi
+      shift 2
+      ;;
+
+    -d|--delete)
+      DELETE=TRUE
+      shift
+      ;;
+
+    -h|--help)
+      usage
+      exit
+      ;;
+
+    -i|--interactive)
+      INTERACTIVE=TRUE
+      shift
+      ;;
+
+    -k|--comp-level)
+      COMPRESSION_LEVEL="$2"
+      if [[ ! "${COMPRESSION_LEVEL}" =~ ^[0-9]$ ]]; then
+        errexit "Invalid compression level: ${COMPRESSION_LEVEL}"
+      fi
+      shift 2
+      ;;
+
+    -o|--output)
+      OUTPUT="$2"
+      if [[ "${OUTPUT}" != "lite" && "${OUTPUT}" != "desktop" && "${OUTPUT}" != "full" && "${OUTPUT}" != "all" ]]; then
+        errexit "Invalid output: ${OUTPUT}"
+      fi
+      shift 2
+      ;;
+
+    -p|--purge)
+      PURGE=TRUE
+      shift
+      ;;
+
+    -s|--ssh)
+      SSH=TRUE
+      shift
+      ;;
+
+    -u|--unattended)
+      UNATND=TRUE
+      shift
+      ;;
+
+    -z|--user-pwd)
+      OIFS=${IFS}
+      IFS=':'
+      USER_PWD=($2)
+      IFS=${OIFS}
+      USERNAME="${USER_PWD[0]}"
+      USERNAME="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<< "${USERNAME}")"
+      PASSWORD="${USER_PWD[1]}"
+      PASSWORD="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<< "${PASSWORD}")"
+      if [[ "${USERNAME}" = "" || "${PASSWORD}" = "" ]]; then
+        errexit "Invalid 'username:password': ${USERNAME}:${PASSWORD}"
+      fi
+      shift 2
+      ;;
+
+    -*|--*)
+      errexit "Unrecognized option: $1"
+      ;;
+
+    *)
+      OUTDIR="$1"
+      OUTDIR="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<< "${OUTDIR}")"
+      shift
+      ;;
+
+  esac
+done
+
+if [[ "${UNATND}" = "FALSE" && "${ARCH}" = "" ]]; then
+  echo ""
+  echo -e -n "a) arm64\nb) armhf\nArchitecture? "
+  while read -r -n 1 -s answer; do
+    if [[ ${answer} = [aAbB] ]]; then
+      echo "${answer}"
+      if [[ ${answer} = [aA] ]]; then
+        ARCH="arm64"
+      elif [[ ${answer} = [bB] ]]; then
+        ARCH="armhf"
+      fi
+      break
+    fi
+  done
+fi
+
+if [[ "${UNATND}" = "FALSE" && "${OUTPUT}" = "" ]]; then
+  echo ""
+  echo -e -n "a) lite\nb) desktop\nc) full\nd) all\nOutput? "
+  while read -r -n 1 -s answer; do
+    if [[ ${answer} = [aAbBcCdD] ]]; then
+      echo "${answer}"
+      if [[ ${answer} = [aA] ]]; then
+        OUTPUT="lite"
+      elif [[ ${answer} = [bB] ]]; then
+        OUTPUT="desktop"
+      elif [[ ${answer} = [cC] ]]; then
+        OUTPUT="full"
+      elif [[ ${answer} = [dD] ]]; then
+        OUTPUT="all"
+      fi
+      break
+    fi
+  done
+fi
+
+if [[ "${UNATND}" = "FALSE" && "${COMPRESSION}" = "" ]]; then
+  echo ""
+  echo -e -n "a) none\nb) zip\nc) gz\nd) xz\nCompression? "
+  while read -r -n 1 -s answer; do
+    if [[ ${answer} = [aAbBcCdD] ]]; then
+      echo "${answer}"
+      if [[ ${answer} = [aA] ]]; then
+        COMPRESSION="none"
+      elif [[ ${answer} = [bB] ]]; then
+        COMPRESSION="zip"
+      elif [[ ${answer} = [cC] ]]; then
+        COMPRESSION="gz"
+      elif [[ ${answer} = [dD] ]]; then
+        COMPRESSION="xz"
+      fi
+      break
+    fi
+  done
+fi
+
+if [[ "${UNATND}" = "FALSE" && "${COMPRESSION_LEVEL}" = "" && "${COMPRESSION}" != "none" ]]; then
+  echo ""
+  echo -n "Compression level (0-9): "
+  while read -r -n 1 -s answer; do
+    if [[ "${answer}" =~ ^[0-9]$ ]]; then
+      echo "${answer}"
+      COMPRESSION_LEVEL="${answer}"
+      break
+    fi
+  done
+fi
+
+if [[ "${UNATND}" = "FALSE" && "${USERNAME}" = "" ]]; then
+  echo ""
+  echo -n "Username (blank = none): "
+  read -r USERNAME
+fi
+USERNAME="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<< "${USERNAME}")"
+if [[ "${UNATND}" = "FALSE" && "${USERNAME}" != "" && "${PASSWORD}" = "" ]]; then
+  echo ""
+  echo -n "Password: "
+  read -r PASSWORD
+fi
+PASSWORD="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<< "${PASSWORD}")"
+
+if [[ "${UNATND}" = "FALSE" && "${SSH}" = "FALSE" ]]; then
+  echo ""
+  echo -n "Enable SSH access (y/n)? "
+  while read -r -n 1 -s answer; do
+    if [[ ${answer} = [yYnN] ]]; then
+      echo "${answer}"
+      if [[ ${answer} = [yY] ]]; then
+        SSH=TRUE
+      fi
+      break
+    fi
+  done
+fi
+
+if [[ "${UNATND}" = "FALSE" && "${DELETE}" = "FALSE" ]]; then
+  echo ""
+  echo -n "Delete existing files (y/n)? "
+  while read -r -n 1 -s answer; do
+    if [[ ${answer} = [yYnN] ]]; then
+      echo "${answer}"
+      if [[ ${answer} = [yY] ]]; then
+        DELETE=TRUE
+      fi
+      break
+    fi
+  done
+fi
+
+if [[ "${UNATND}" = "FALSE" && "${INTERACTIVE}" = "FALSE" ]]; then
+  echo ""
+  echo -n "Interactive shell before generation (y/n)? "
+  while read -r -n 1 -s answer; do
+    if [[ ${answer} = [yYnN] ]]; then
+      echo "${answer}"
+      if [[ ${answer} = [yY] ]]; then
+        INTERACTIVE=TRUE
+      fi
+      break
+    fi
+  done
+fi
+
+if [[ "${UNATND}" = "FALSE" && "${PURGE}" = "FALSE" ]]; then
+  echo ""
+  echo -n "Purge files upon completion (y/n)? "
+  while read -r -n 1 -s answer; do
+    if [[ ${answer} = [yYnN] ]]; then
+      echo "${answer}"
+      if [[ ${answer} = [yY] ]]; then
+        PURGE=TRUE
+      fi
+      break
+    fi
+  done
+fi
+
+if [ "${OUTDIR}" = "" ]; then
+  if [ "${REALUSER}" = "root" ]; then
+    OUTDIR="/root/"
+  else
+    OUTDIR="/home/${REALUSER}/"
+  fi
+fi
+
+echo ""
+echo -n "Architecture: "
+if [ "${ARCH}" = "" ]; then
+  echo "arm64"
+else
+  echo "${ARCH}"
+fi
+echo -n "Output: "
+if [ "${OUTPUT}" = "" ];then
+  echo "all"
+else
+  echo "${OUTPUT}"
+fi
+echo -n "Compression: "
+if [ "${COMPRESSION}" = "" ]; then
+  echo "zip"
+else
+  echo "${COMPRESSION}"
+fi
+if [ "${COMPRESSION}" != "none" ]; then
+  echo -n "Comp-Level: "
+  if [ "${COMPRESSION_LEVEL}" = "" ]; then
+    echo "6"
+  else
+    echo "${COMPRESSION_LEVEL}"
+  fi
+fi
+if [ "${USERNAME}" != "" ]; then
+  echo "Username: ${USERNAME}"
+fi
+if [ "${PASSWORD}" != "" ]; then
+  echo "Password: ${PASSWORD}"
+fi
+echo "$(dispyn "Enable SSH access" "${SSH}")"
+echo "$(dispyn "Delete existing files" "${DELETE}")"
+echo "$(dispyn "Interactive shell" "${INTERACTIVE}")"
+echo "$(dispyn "Purge files upon completion" "${PURGE}")"
+echo "Destination: $(realpath ${OUTDIR})"
+
+if [ "${UNATND}" = "FALSE" ]; then
+  echo ""
+  echo -n "Generate (y/n)? "
+  while read -r -n 1 -s answer; do
+    if [[ ${answer} = [yYnN] ]]; then
+      echo "${answer}"
+      if [[ ${answer} = [yY] ]]; then
+        break
+      else
+        echo ""
+        echo "Aborted"
+        echo ""
+        exit 1
+      fi
+    fi
+  done
+fi
+
+instpkgs coreutils quilt parted qemu-user-static debootstrap zerofree zip \
+dosfstools libarchive-tools libcap2-bin grep rsync xz-utils file git curl bc \
+gpg pigz xxd arch-test
+
+if [[ "${DELETE}" = "TRUE" && -d "$(realpath $(dirname $0))/pi-gen" ]]; then
+  echo ""
+  echo "Deleting existing files"
+  rm -r "$(realpath $(dirname $0))/pi-gen"
+fi
+
+echo ""
+if [[ "${ARCH}" = "" || "${ARCH}" = "arm64" ]]; then
+  git clone --branch arm64 https://github.com/RPI-Distro/pi-gen.git
+else
+  git clone https://github.com/RPi-Distro/pi-gen.git
+fi
+
+cd pi-gen
+
+echo "DEPLOY_DIR=$(realpath ${OUTDIR})" > config
+if [ "${COMPRESSION}" != "" ]; then
+  echo "DEPLOY_COMPRESSION=${COMPRESSION}" >> config
+fi
+if [[ "${COMPRESSION_LEVEL}" != "" && "${COMPRESSION}" != "none" ]]; then
+  echo "COMPRESSION_LEVEL=${COMPRESSION_LEVEL}" >> config
+fi
+if [ "${USERNAME}" != "" ]; then
+  echo "FIRST_USER_NAME=${USERNAME}" >> config
+  if [ "${PASSWORD}" != "" ]; then
+    echo "FIRST_USER_PASS=${PASSWORD}" >> config
+  fi
+  echo "DISABLE_FIRST_BOOT_USER_RENAME=1" >> config
+fi
+if [ "${SSH}" = "TRUE" ]; then
+  echo "ENABLE_SSH=1" >> config
+fi
+
+if [ "${INTERACTIVE}" = "TRUE" ]; then
+  echo ""
+  echo "Launching BASH shell"
+  echo "Use exit or ^D to resume"
+  echo ""
+  /bin/bash -i
+  echo ""
+fi
+
+if [ "${OUTPUT}" = "lite" ]; then
+  touch ./stage3/SKIP ./stage4/SKIP ./stage5/SKIP
+  touch ./stage3/SKIP_IMAGES ./stage4/SKIP_IMAGES ./stage5/SKIP_IMAGES
+elif [ "${OUTPUT}" = "desktop" ]; then
+  touch ./stage5/SKIP
+  touch ./stage2/SKIP_IMAGES ./stage3/SKIP_IMAGES ./stage5/SKIP_IMAGES
+elif [ "${OUTPUT}" = "full" ]; then
+  touch ./stage2/SKIP_IMAGES ./stage3/SKIP_IMAGES ./stage4/SKIP_IMAGES
+fi
+
+./build.sh
+
+cd "${CURDIR}"
+
+if [[ "${PURGE}" = "TRUE" && -d "$(realpath $(dirname $0))/pi-gen" ]]; then
+  echo ""
+  echo "Purging files"
+  rm -r "$(realpath $(dirname $0))/pi-gen"
+fi

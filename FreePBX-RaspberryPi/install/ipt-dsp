@@ -1,0 +1,28 @@
+#!/bin/bash
+
+if [ ! -s /etc/iptables/ipt-dat ]; then
+  echo ""
+  echo "No rules available to display"
+  echo ""
+  exit 1
+fi
+clear
+while read DATIP DATFQDN; do
+  if [ "${DATFQDN}" = "" ]; then
+    echo ""
+    echo "Rules for IP Address: ${DATIP}"
+    echo ""
+    MATCH="ipt-add : ${DATIP}"
+    grep "${MATCH}" /etc/iptables/rules.v4 | grep -o -e "^.*ACCEPT"
+  fi
+done < /etc/iptables/ipt-dat
+while read DATIP DATFQDN; do
+  if [ "${DATFQDN}" != "" ]; then
+    echo ""
+    echo "Rules for Fully Qualified Domain Name: ${DATFQDN}"
+    echo ""
+    MATCH="ipt-add : ${DATFQDN}"
+    grep "${MATCH}" /etc/iptables/rules.v4 | grep -o -e "^.*ACCEPT"
+  fi
+done < /etc/iptables/ipt-dat
+echo ""

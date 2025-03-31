@@ -1,0 +1,246 @@
+#!/bin/bash
+
+DRIVER=usbhid-ups
+
+if [ $(id -u) -ne 0 ]; then
+  echo ""
+  echo "$0 must be run as root user"
+  echo ""
+  exit 1
+fi
+if [ -d /etc/nut ]; then
+  echo ""
+  echo "Network UPS Tools already installed"
+  echo ""
+  exit 1
+fi
+echo ""
+echo -n "Install Network UPS Tools (y/n)? "
+while read -r -n 1 -s answer; do
+  if [[ ${answer} = [yYnN] ]]; then
+    echo "${answer}"
+    if [[ ${answer} = [yY] ]]; then
+      break
+    else
+      echo ""
+      echo "Aborted"
+      echo ""
+      exit 1
+    fi
+  fi
+done
+
+echo ""
+echo -e -n "a) Server\nb) Client\nNUT Mode? "
+while read -r -n 1 -s answer; do
+  if [[ ${answer} = [aAbB] ]]; then
+    echo "${answer}"
+    if [[ ${answer} = [aA] ]]; then
+      MODE=netserver
+    else
+      MODE=netclient
+    fi
+    break
+  fi
+done
+
+if [ "${MODE}" = "netserver" ]; then
+  IPADDR=$(ifconfig eth0 | sed -n 's|^.*inet \(\S\+\).*|\1|p')
+else
+  while :
+  do
+    echo ""
+    echo -n "Server IP Address: "
+    read -r IPADDR
+    if [[ "${IPADDR}" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+      break
+    fi
+  done
+fi
+
+while :
+do
+  echo ""
+  echo -n "Server Password: "
+  read -r -s PASSWORD
+  echo ""
+  echo -n "Retype Password: "
+  read -r -s PASSWORD2
+  echo ""
+  if [ "${PASSWORD2}" = "${PASSWORD}"  ]; then
+    if [[ "${PASSWORD}" =~ ^[[:graph:]]+$ ]]; then
+      break
+    else
+      echo "Invalid password"
+    fi
+  else
+    echo "Passwords don't match"
+  fi
+done
+
+echo ""
+apt-get -y update
+apt-get -y install nut
+if [ $? -ne 0 ]; then
+  echo ""
+  echo "Network UPS Tools installation failed"
+  echo ""
+  exit 1
+fi
+sed -i "s/MODE=none/MODE=${MODE}/" /etc/nut/nut.conf
+if [ "${MODE}" = "netserver" ]; then
+  cat <<EOF >> /etc/nut/upsd.users
+
+[admin]
+  password = ${PASSWORD}
+  actions = SET
+  instcmds = ALL
+
+[upsmon]
+  password = ${PASSWORD}
+  upsmon master
+
+[upsmon-remote]
+  password = ${PASSWORD}
+  upsmon slave
+EOF
+
+  cat <<EOF >> /etc/nut/upsd.conf
+
+LISTEN 127.0.0.1 3493
+LISTEN ${IPADDR} 3493
+EOF
+
+ cat <<EOF >> /etc/nut/ups.conf
+
+[pbx]
+  driver = ${DRIVER}
+  port = auto
+  pollinterval = 5
+EOF
+
+ cat <<EOF >> /etc/nut/upsmon.conf
+
+MONITOR pbx@localhost 1 upsmon ${PASSWORD} master
+
+NOTIFYCMD /etc/nut/notify-cmd.sh
+
+NOTIFYFLAG ONLINE     SYSLOG+EXEC
+NOTIFYFLAG ONBATT     SYSLOG+EXEC
+NOTIFYFLAG LOWBATT    SYSLOG+EXEC
+NOTIFYFLAG FSD        SYSLOG+EXEC
+NOTIFYFLAG COMMOK     SYSLOG+EXEC
+NOTIFYFLAG COMMBAD    SYSLOG+EXEC
+NOTIFYFLAG SHUTDOWN   SYSLOG+EXEC
+NOTIFYFLAG REPLBATT   SYSLOG+EXEC
+NOTIFYFLAG NOCOMM     SYSLOG+EXEC
+NOTIFYFLAG NOPARENT   SYSLOG+EXEC
+EOF
+
+ cat <<\EOF > /etc/nut/notify-cmd.sh
+#!/bin/sh
+
+echo "$*" | mail -s "Message from PBX (UPS Monitor)" root
+EOF
+
+  chown nut:nut /etc/nut/*
+  chmod 640 /etc/nut/*
+  chmod 700 /etc/nut/notify-cmd.sh
+else
+ cat <<EOF >> /etc/nut/upsmon.conf
+
+MONITOR pbx@${IPADDR} 1 upsmon-remote ${PASSWORD} slave
+EOF
+
+  chown nut:nut /etc/nut/*
+  chmod 640 /etc/nut/*
+fi
+ cat <<EOF > /root/ups-info
+#!/bin/bash
+
+SERVER=${IPADDR}
+
+UPSINFO=\$(upsc pbx@\${SERVER} 2> /dev/null)
+EOF
+
+ cat <<\EOF >> /root/ups-info
+if [ ${#UPSINFO} -eq 0 ]; then
+  echo ""
+  echo "Unable to retrieve UPS information"
+  echo ""
+  exit 1
+fi
+echo ""
+MODEL=$(sed -n 's/^ups.model: \(\S\+\)/\1/p' <<< ${UPSINFO})
+echo "UPS model number: ${MODEL}"
+echo ""
+STATUS=$(sed -n 's/^ups.status: \(\S\+\)/\1/p' <<< ${UPSINFO})
+echo -n "Input power source: "
+if [ "${STATUS:0:2}" = "OL" ]; then
+  echo "AC Power Line"
+else
+  echo "Internal Battery"
+fi
+echo ""
+RUNTIME=$(sed -n 's/^battery.runtime: \(\S\+\)/\1/p' <<< ${UPSINFO})
+echo "Estimated run time: $((${RUNTIME} / 60)) minutes"
+echo ""
+CHARGE=$(sed -n 's/^battery.charge: \(\S\+\)/\1/p' <<< ${UPSINFO})
+echo "Battery charged to: ${CHARGE} percent"
+echo ""
+EOF
+
+chmod +x /root/ups-info
+
+ cat <<EOF > /root/ups-ctrl
+#!/bin/bash
+
+SERVER=${IPADDR}
+
+CMNDBASE="upscmd -u admin -p ${PASSWORD} pbx@\${SERVER}"
+EOF
+
+ cat <<\EOF >> /root/ups-ctrl
+echo ""
+echo -e -n "a) Alarm Mute\nb) Alarm Enable\nc) Alarm Disable\nd) Battery Test Start\ne) Battery Test Stop\nf) Battery Test Auto\nUPS Command? "
+while read -r -n 1 -s answer; do
+  if [[ ${answer} = [aAbBcCdDeEfF] ]]; then
+    echo "${answer}"
+    echo ""
+    if [[ ${answer} = [aA] ]]; then
+      ${CMNDBASE} beeper.mute
+    elif [[ ${answer} = [bB] ]]; then
+      ${CMNDBASE} beeper.enable
+    elif [[ ${answer} = [cC] ]]; then
+      ${CMNDBASE} beeper.disable
+    elif [[ ${answer} = [dD] ]]; then
+      ${CMNDBASE} test.battery.start.deep
+    elif [[ ${answer} = [eE] ]]; then
+      ${CMNDBASE} test.battery.stop
+    elif [[ ${answer} = [fF] ]]; then
+      ${CMNDBASE} test.battery.start.quick
+    fi
+    break
+  fi
+done
+echo ""
+EOF
+
+chmod +x /root/ups-ctrl
+
+echo ""
+echo "Network UPS Tools installation completed"
+echo ""
+echo "Reboot required"
+echo ""
+echo -n "Reboot now (y/n)? "
+while read -r -n 1 -s answer; do
+  if [[ ${answer} = [yYnN] ]]; then
+    echo "${answer}"
+    if [[ ${answer} = [yY] ]]; then
+      shutdown -r now
+    fi
+    break
+  fi
+done
+echo ""

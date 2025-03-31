@@ -1,0 +1,97 @@
+#!/bin/bash
+
+trap '{ stty sane; echo ""; errexit "Aborted"; }' SIGINT SIGTERM
+
+MNTPATH="/tmp/lbl2id-mnt"
+
+errexit()
+{
+  echo ""
+  echo "$1"
+  echo ""
+  if [ "${MNTED}" = "TRUE" ]; then
+    umount "${BOOTMNT}/" &> /dev/null
+    umount "${MNTPATH}/" &> /dev/null
+  fi
+  rm -rf "${MNTPATH}/" &> /dev/null
+  exit 1
+}
+
+mntdev()
+{
+  if [ ! -d "${MNTPATH}/" ]; then
+    mkdir "${MNTPATH}/"
+    if [ $? -ne 0 ]; then
+      errexit "Unable to make ROOT partition mount point"
+    fi
+  fi
+  mount "${DEVICE_P}2" "${MNTPATH}/"
+  if [ $? -ne 0 ]; then
+    errexit "Unable to mount ROOT partition"
+  fi
+  MNTED=TRUE
+  BOOTMNT="${MNTPATH}$(sed -n 's|^\S\+\s\+\(/boot\S*\)\s\+.*$|\1|p' ${MNTPATH}/etc/fstab)"
+  if [ ! -d "${BOOTMNT}/" ]; then
+    mkdir -p "${BOOTMNT}/"
+    if [ $? -ne 0 ]; then
+      errexit "Unable to make BOOT partition mount point"
+    fi
+  fi
+  mount "${DEVICE_P}1" "${BOOTMNT}/"
+  if [ $? -ne 0 ]; then
+    errexit "Unable to mount BOOT partition"
+  fi
+}
+
+umntdev()
+{
+  umount "${BOOTMNT}/"
+  if [ $? -ne 0 ]; then
+    errexit "Unable to unmount BOOT partition"
+  fi
+  umount "${MNTPATH}/"
+  if [ $? -ne 0 ]; then
+    errexit "Unable to unmount ROOT partition"
+  fi
+  MNTED=FALSE
+  rm -r "${MNTPATH}/"
+}
+
+MNTED=FALSE
+if [ $(id -u) -ne 0 ]; then
+  errexit "$0 must be run as root user"
+fi
+PGMNAME="$(basename $0)"
+for PID in $(pidof -x -o %PPID "${PGMNAME}"); do
+  if [ ${PID} -ne $$ ]; then
+    errexit "${PGMNAME} is already running"
+  fi
+done
+DEVICE="$1"
+if [[ (! "${DEVICE}" =~ ^/dev/sd[a-z]$ && ! "${DEVICE}" =~ ^/dev/nvme[0-9]n1$ && ! "${DEVICE}" =~ ^/dev/mmcblk0$) || ! -b "${DEVICE}" ]]; then
+  errexit "Invalid DEVICE: ${DEVICE}"
+fi
+DEVICE_P="${DEVICE}"
+if [[ "${DEVICE_P}" =~ ^/dev/nvme[0-9]n1$ || "${DEVICE_P}" = "/dev/mmcblk0" ]]; then
+  DEVICE_P+='p'
+fi
+echo ""
+echo -n "Convert ${DEVICE} (y/n)? "
+while read -r -n 1 -s answer; do
+  if [[ "${answer}" = [yYnN] ]]; then
+    echo "${answer}"
+    if [[ "${answer}" = [yY] ]]; then
+      break
+    else
+      errexit "Aborted"
+    fi
+  fi
+done
+echo ""
+mntdev
+PARTUUID="$(blkid ${DEVICE_P}2 | sed -n 's|^.*PARTUUID="\(\S\+\)".*|\1|p')"
+sed -i "/^[[:space:]]*#/!s|^\(.*root=\)\S\+\(\s\+.*\)$|\1PARTUUID=${PARTUUID}\2|" "${BOOTMNT}/cmdline.txt"
+sed -i "/^[[:space:]]*#/!s|^\S\+\(\s\+/\s\+.*\)$|PARTUUID=${PARTUUID}\1|" "${MNTPATH}/etc/fstab"
+PARTUUID="$(blkid ${DEVICE_P}1 | sed -n 's|^.*PARTUUID="\(\S\+\)".*|\1|p')"
+sed -i "/^[[:space:]]*#/!s|^\S\+\(\s\+/boot\S*\s\+vfat\s\+.*\)$|PARTUUID=${PARTUUID}\1|" "${MNTPATH}/etc/fstab"
+umntdev

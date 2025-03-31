@@ -1,0 +1,43 @@
+#!/bin/bash
+
+echo ""
+echo -n "Install HylaFAX fax server (y/n)? "
+while read -r -n 1 -s answer; do
+  if [[ ${answer} = [yYnN] ]]; then
+    echo "${answer}"
+    if [[ ${answer} = [yY] ]]; then
+      break
+    else
+      echo ""
+      echo "Aborted"
+      echo ""
+      exit 1
+    fi
+  fi
+done
+OSVER="$(sed -n 's|^VERSION=".*(\(.*\))"|\1|p' /etc/os-release)"
+if [ "${OSVER}" = "bullseye" ]; then
+  echo "deb http://deb.debian.org/debian buster main contrib non-free" > /etc/apt/sources.list.d/hylafax.list
+fi
+apt-get -y update
+if [ "${OSVER}" = "bullseye" ]; then
+    apt-get -y -t buster install iaxmodem=1.2.0~dfsg-3 hylafax-client=3:6.0.6-8.1 hylafax-server=3:6.0.6-8.1
+  else
+    apt-get -y install iaxmodem hylafax-client hylafax-server
+fi
+if [ $? -ne 0 ]; then
+  echo ""
+  echo "HylaFAX installation failed"
+  echo ""
+  exit 1
+fi
+apt-mark hold iaxmodem hylafax-client hylafax-server
+/usr/sbin/faxadduser root
+if [ -f /etc/default/hylafax ]; then
+  sed -i 's/# USE_FAXGETTY=.*/USE_FAXGETTY=init/' /etc/default/hylafax
+fi
+echo ""
+echo "HylaFAX installation completed"
+echo ""
+echo "Use add-fax-extension to add a FAX extension"
+echo ""

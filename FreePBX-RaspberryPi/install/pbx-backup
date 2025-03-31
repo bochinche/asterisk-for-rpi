@@ -1,0 +1,77 @@
+#!/bin/bash
+
+DATETIME=`date +'%Y.%m.%d.%H.%M'`
+VER_ASTERISK=`asterisk -V | cut -b 10-`
+VER_FREEPBX=`cat /var/www/html/admin/modules/framework/module.xml | grep "<version>" | tail -1 | cut -f 2 -d ">" | sed 's|</version||'`
+BACKUP="${DATETIME}-A${VER_ASTERISK}-F${VER_FREEPBX}.tar"
+
+if [ "$1" = "" ]; then
+  echo ""
+  echo "Usage: $0 /path/ [cron]"
+  echo ""
+  exit 1
+fi
+
+BACKUP_DIR=$1
+if [[ ! ${BACKUP_DIR} =~ ^.*/$ ]]; then
+  BACKUP_DIR="${BACKUP_DIR}/"
+fi
+if [ ! -d ${BACKUP_DIR} ]; then
+  echo ""
+  echo "Backup directory (${BACKUP_DIR}) not found"
+  echo ""
+  exit 1
+fi
+
+echo ""
+echo "Backing up to: ${BACKUP_DIR}${BACKUP}.gz"
+
+if [ "$2" != "cron" ]; then
+  echo ""
+  echo -n "Backup now (y/n)? "
+  while read -r -n 1 -s answer; do
+    if [[ ${answer} = [yYnN] ]]; then
+      echo "${answer}"
+      if [[ ${answer} = [yY] ]]; then
+        break
+      else
+        echo ""
+        echo "Aborted"
+        echo ""
+        exit 1
+      fi
+    fi
+ done
+fi
+
+LOGPATH="$(realpath $0).log"
+LOGFILE="/tmp/pbx-backup.log"
+echo "Backing up to: ${BACKUP_DIR}${BACKUP}.gz" > ${LOGFILE}
+echo ""
+echo "Stopping Asterisk / Apache / MySQL"
+echo ""
+fwconsole stop &>> ${LOGFILE}
+service apache2 stop &>> ${LOGFILE}
+service mysql stop &>> ${LOGFILE}
+echo "Creating backup"
+echo ""
+rm /var/www/html/admin/modules/_cache/* &> /dev/null
+cd ${BACKUP_DIR}
+tar -cf ${BACKUP} /var/www /var/lib/mysql /var/lib/asterisk /root /etc/asterisk /etc/crontab /var/spool/asterisk /etc/freepbx.conf /etc/amportal.conf /etc/mysql/debian.cnf &>> ${LOGFILE}
+sync
+echo "Backup created"
+echo ""
+echo "Restarting MySQL / Apache / Asterisk"
+echo ""
+service mysql start &>> ${LOGFILE}
+service apache2 start &>> ${LOGFILE}
+fwconsole start &>> ${LOGFILE}
+echo "Compressing backup"
+echo ""
+gzip ${BACKUP}
+sync
+echo "Backup Compressed"
+echo ""
+mv ${LOGFILE} ${LOGPATH}
+echo "Backup saved to ${BACKUP_DIR}${BACKUP}.gz"
+echo ""

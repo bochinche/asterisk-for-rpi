@@ -1,0 +1,189 @@
+#!/bin/bash
+
+# http://elinux.org/RPi_HardwareHistory#INFO_Revision_History
+
+REVISION="$(grep "Revision" /proc/cpuinfo | cut -f2 | cut -c3-)"
+
+case "${REVISION}" in
+  "0002")
+    INFO="Raspberry Pi 1 Model B [256MB] / PCB v1.0 (Original)"
+    ;;
+  "0003")
+    INFO="Raspberry Pi 1 Model B [256MB] / PCB v1.0 (Fuses mod + D14 removed [ECN0001])"
+    ;;
+  "0004")
+    INFO="Raspberry Pi 1 Model B [256MB] / PCB v2.0 (Sony)"
+    ;;
+  "0005")
+    INFO="Raspberry Pi 1 Model B [256MB] / PCB v2.0 (Qisda)"
+    ;;
+  "0006")
+    INFO="Raspberry Pi 1 Model B [256MB] / PCB v2.0 (Egoman)"
+    ;;
+  "0007")
+    INFO="Raspberry Pi 1 Model A [256MB] / PCB v2.0 (Egoman)"
+    ;;
+  "0008")
+    INFO="Raspberry Pi 1 Model A [256MB] / PCB v2.0 (Sony)"
+    ;;
+  "0009")
+    INFO="Raspberry Pi 1 Model A [256MB] / PCB v2.0 (Qisda)"
+    ;;
+  "000d")
+    INFO="Raspberry Pi 1 Model A [512MB] / PCB v2.0 (Egoman)"
+    ;;
+  "000e")
+    INFO="Raspberry Pi 1 Model B [512MB] / PCB v2.0 (Sony)"
+    ;;
+  "000f")
+    INFO="Raspberry Pi 1 Model B [512MB] / PCB v2.0 (Qisda)"
+    ;;
+  "0010")
+    INFO="Raspberry Pi 1 Model B+ [512MB] / PCB v1.0 (Sony)"
+    ;;
+  "0011")
+    INFO="Compute Module [512MB] / PCB v1.0 (Sony)"
+    ;;
+  "0012")
+    INFO="Raspberry Pi 1 Model A+ [256MB] / PCB v1.1 (Sony)"
+    ;;
+  "0013")
+    INFO="Raspberry Pi 1 Model B+ [512MB] / PCB v1.2 (????)"
+    ;;
+  "0014")
+    INFO="Compute Module [512MB] / PCB v1.0 (Embest)"
+    ;;
+  "0015")
+    INFO="Raspberry Pi 1 Model A+ [256/512MB] / PCB v1.1 (Embest)"
+    ;;
+  "a01040")
+    INFO="Raspberry Pi 2 Model B [1GB] / PCB v1.0 (Sony)"
+    ;;
+  "a01041")
+    INFO="Raspberry Pi 2 Model B [1GB] / PCB v1.1 (Sony)"
+    ;;
+  "a21041")
+    INFO="Raspberry Pi 2 Model B [1GB] / PCB v1.1 (Embest)"
+    ;;
+  "a22042")
+    INFO="Raspberry Pi 2 Model B (BCM2837) [1GB] / PCB v1.2 (Embest)"
+    ;;
+  "900021")
+    INFO="Raspberry Pi 1 Model A+ [512MB] / PCB v1.1 (Sony)"
+    ;;
+  "900032")
+    INFO="Raspberry Pi 1 Model B+ [512MB] / PCB v1.2 (Sony)"
+    ;;
+  "9020e0")
+    INFO="Raspberry Pi 3 Model A+ [512MB] / PCB v1.0 (Sony UK)"
+    ;;
+  "920092")
+    INFO="Raspberry Pi Zero [512MB] / PCB v1.2 (Sony)"
+    ;;
+  "900093")
+    INFO="Raspberry Pi Zero [512MB] / PCB v1.3 (Sony)"
+    ;;
+  "920093")
+    INFO="Raspberry Pi Zero [512MB] / PCB v1.3 (Embest)"
+    ;;
+  "900061")
+    INFO="Compute Module [512MB] / PCB v1.1 (Sony UK)"
+    ;;
+  "9000c1")
+    INFO="Raspberry Pi Zero W [512MB] / PCB v1.1 (Sony)"
+    ;;
+  "a02082")
+    INFO="Raspberry Pi 3 Model B [1GB] / PCB v1.2 (Sony)"
+    ;;
+  "a020a0")
+    INFO="Compute Module [1GB] / PCB v1.0 (Sony)"
+    ;;
+  "a22082")
+    INFO="Raspberry Pi 3 Model B [1GB] / PCB v1.2 (Embest)"
+    ;;
+  "a220a0")
+    INFO="Compute Module 3 [1GB] / PCB v1.0 (Embest)"
+    ;;
+  "a32082")
+    INFO="Raspberry Pi 3 Model B [1GB] / PCB v1.2 (Sony Japan)"
+    ;;
+  "a52082")
+    INFO="Raspberry Pi 3 Model B [1GB] / PCB v1.2 (Stadium)"
+    ;;
+  "a22083")
+    INFO="Raspberry Pi 3 Model B [1GB] / PCB v1.3 (Embest)"
+    ;;
+  "a02100")
+    INFO="Compute Module 3+ [1GB] / PCB v1.0 (Sony UK)"
+    ;;
+  "a020d3")
+    INFO="Raspberry Pi 3 Model B+ [1GB] / PCB v1.3 (Sony)"
+    ;;
+  "a03111")
+    INFO="Raspberry Pi 4 Model B [1GB] / PCB v1.1 (Sony UK)"
+    ;;
+  "b03111")
+    INFO="Raspberry Pi 4 Model B [2GB] / PCB v1.1 (Sony UK)"
+    ;;
+  "c03111")
+    INFO="Raspberry Pi 4 Model B [4GB] / PCB v1.1 (Sony UK)"
+    ;;
+  "a03112")
+    INFO="Raspberry Pi 4 Model B [1GB] / PCB v1.2 (Sony UK)"
+    ;;
+  "b03112")
+    INFO="Raspberry Pi 4 Model B [2GB] / PCB v1.2 (Sony UK)"
+    ;;
+  "c03112")
+    INFO="Raspberry Pi 4 Model B [4GB] / PCB v1.2 (Sony UK)"
+    ;;
+  *)
+    INFO=""
+    ;;
+esac
+echo ""
+echo "${INFO}"
+
+TEMP=$(cat /sys/class/thermal/thermal_zone0/temp)
+CPUCLK=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq)
+ARMMEM=$(vcgencmd get_config total_mem | sed -n 's|^total_mem=\(.*\)|\1|p')
+GPUMEM=$(vcgencmd get_mem gpu | sed -n 's|^gpu=\(.*\)M|\1|p')
+LOAD=$(cat /proc/loadavg | awk -F ' ' '{print $1} {print $2} {print $3}')
+
+TEMP1=$((TEMP / 1000))
+TEMP2=$((TEMP % 1000))
+CPUCLK1=$((CPUCLK / 1000))
+CPUCLK2=$((CPUCLK % 1000))
+
+echo ""
+printf "CPU - Temp: %d.%.3d C / Clock: %d.%.3d MHz\n" ${TEMP1} ${TEMP2} ${CPUCLK1} ${CPUCLK2}
+echo "RAM - Arm: ${ARMMEM} M / Gpu: ${GPUMEM} M"
+echo Load: ${LOAD}
+echo ""
+echo "$(lsb_release -d | sed -n 's|^Description:\s*\(.*\)|\1|p')"
+echo ""
+
+STATUS=$(($(vcgencmd get_throttled | sed -n 's|^throttled=\(.*\)|\1|p')))
+if [ ${STATUS} -ne 0 ]; then
+  if [ $((${STATUS} & 0x00001)) -ne 0 ]; then
+    echo "Power is currently Under Voltage"
+  elif [ $((${STATUS} & 0x10000)) -ne 0 ]; then
+    echo "Power has previously been Under Voltage"
+  fi
+  if [ $((${STATUS} & 0x00002)) -ne 0 ]; then
+    echo "ARM Frequency is currently Capped"
+  elif [ $((${STATUS} & 0x20000)) -ne 0 ]; then
+    echo "ARM Frequency has previously been Capped"
+  fi
+  if [ $((${STATUS} & 0x00004)) -ne 0 ]; then
+    echo "CPU is currently Throttled"
+  elif [ $((${STATUS} & 0x40000)) -ne 0 ]; then
+    echo "CPU has previously been Throttled"
+  fi
+  if [ $((${STATUS} & 0x00008)) -ne 0 ]; then
+    echo "Currently at Soft Temperature Limit"
+  elif [ $((${STATUS} & 0x80000)) -ne 0 ]; then
+    echo "Previously at Soft Temperature Limit"
+  fi
+  echo ""
+fi

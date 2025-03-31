@@ -1,0 +1,58 @@
+#!/bin/bash
+
+EXTNO=99
+FWDNO=18005551212
+CPMAC=00:00:00:00:00:00
+CPNAM="Cell Phone's Name"
+SLEEP=6
+DEBUG=1
+
+COUNTER=0
+while [ ${COUNTER} -lt 60 ]
+do
+  sleep 1
+  VERSION="$(asterisk -rx "core show version" 2> /dev/null)"
+  if [ $? -eq 0 ]; then
+    grep "such" <<< "${VERSION}" > /dev/nul
+    if [ $? -ne 0 ]; then
+      break
+    fi
+  fi
+  (( COUNTER += 1 ))
+done
+asterisk -rx "DATABASE SHOW CF/${EXTNO}" | grep "0 results found." > /dev/null
+if [ $? -eq 0 ]; then
+  if [ ${DEBUG} -ne 0 ]; then
+    echo "Forwarding of extension ${EXTNO} to ${FWDNO} is disabled"
+  fi
+  echo -n "" > /root/cpfs
+else
+  if [ ${DEBUG} -ne 0 ]; then
+    echo "Forwarding of extension ${EXTNO} to ${FWDNO} is enabled"
+  fi
+  echo "" > /root/cpfs
+fi
+while :
+do
+  DEVNAM="$(hcitool name "${CPMAC}")"
+  if [ "${DEVNAM}" = "${CPNAM}" ]; then
+    if [ -s /root/cpfs ]; then
+      if [ ${DEBUG} -ne 0 ]; then
+        echo "Cell Phone Present"
+        echo "Disabling forwarding of extension ${EXTNO} to ${FWDNO}"
+      fi
+      asterisk -rx "DATABASE DEL CF ${EXTNO}" > /dev/null
+      echo -n "" > /root/cpfs
+    fi
+  else
+    if [ ! -s /root/cpfs ]; then
+      if [ ${DEBUG} -ne 0 ]; then
+        echo "Cell Phone Not Present"
+        echo "Enabling forwarding of extension ${EXTNO} to ${FWDNO}"
+      fi
+      asterisk -rx "DATABASE PUT CF ${EXTNO} ${FWDNO}" > /dev/null
+      echo "" > /root/cpfs
+    fi
+  fi
+  sleep ${SLEEP}
+done

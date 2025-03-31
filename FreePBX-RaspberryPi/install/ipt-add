@@ -1,0 +1,217 @@
+#!/bin/bash
+
+if command -v systemctl > /dev/null && systemctl | grep -q '\-\.mount'; then
+  SYSTEMD=1
+elif [ -f /etc/init.d/cron ] && [ ! -h /etc/init.d/cron ]; then
+  SYSTEMD=0
+else
+  echo ""
+  echo "Unrecognized init system"
+  echo ""
+  exit 1
+fi
+
+if [ "$1" = "" ]; then
+  echo ""
+  echo "Usage: $0 IP Address | Fully Qualified Domain Name"
+  echo ""
+  exit 1
+fi
+if [[ "$1" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+  IP=$1
+  OIFS=${IFS}
+  IFS='.'
+  IP=(${IP})
+  IFS=${OIFS}
+  if [[ ${IP[0]} -gt 255 || ${IP[1]} -gt 255 || ${IP[2]} -gt 255 || ${IP[3]} -gt 255 ]]; then
+    echo ""
+    echo "Invald IP Address: $1"
+    echo ""
+    exit 1
+  fi
+  IP=$1
+  FQDN=""
+else
+  IP=`nslookup $1 | tail -2 | cut -f 2 -d " " | head -n 1`
+  if [[ "${IP}" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+    FQDN="$(tr [A-Z] [a-z] <<< "$1")"
+  else
+    echo ""
+    echo "Invalid Fully Qualified Domain Name: $1"
+    echo ""
+    exit 1
+  fi
+fi
+if [ -s /etc/iptables/ipt-dat ]; then
+  while read DATIP DATFQDN; do
+    if [ "${FQDN}" = "" ]; then
+      if [[ "${DATFQDN}" = "" && "${IP}" = "${DATIP}" ]]; then
+        echo ""
+        echo "IP Address already exists: $1"
+        echo ""
+        exit 1
+      fi
+    else
+      if [ "${FQDN}" = "${DATFQDN}" ]; then
+        echo ""
+        echo "Fully Qualified Domain Name already exists: $1"
+        echo ""
+        exit 1
+      fi
+    fi
+  done < /etc/iptables/ipt-dat
+fi
+
+SERVICES[0]="ALL"
+SERVICES[1]="SIP (UDP)"
+SERVICES[2]="SIP (TCP)"
+SERVICES[3]="IAX"
+SERVICES[4]="FTP"
+SERVICES[5]="SSH"
+SERVICES[6]="TFTP"
+SERVICES[7]="HTTP"
+
+RULES[0]="-A INPUT -s ${IP} -j ACCEPT"
+RULES[1]="-A INPUT -s ${IP} -p udp -m udp --dport 5060:5069 -j ACCEPT"
+RULES[2]="-A INPUT -s ${IP} -p tcp -m tcp --dport 5060:5069 -j ACCEPT"
+RULES[3]="-A INPUT -s ${IP} -p udp -m udp --dport 4569 -j ACCEPT"
+RULES[4]="-A INPUT -s ${IP} -p tcp -m tcp --dport 21 -j ACCEPT"
+RULES[5]="-A INPUT -s ${IP} -p tcp -m tcp --dport 22 -j ACCEPT"
+RULES[6]="-A INPUT -s ${IP} -p udp -m udp --dport 69 -j ACCEPT"
+RULES[7]="-A INPUT -s ${IP} -p tcp -m tcp --dport 80 -j ACCEPT"
+
+clear
+echo ""
+echo "Available services:"
+echo ""
+for i in ${!SERVICES[@]}; do
+  echo "${i} = ${SERVICES[i]}"
+done
+echo ""
+echo -n "Select services to allow (separated by spaces): "
+read INPUT
+INPUT=(${INPUT})
+FLAG=0
+for i in ${!INPUT[@]}; do
+  if [[ ! "${INPUT[i]}" =~ ^[0-9]$ || ${INPUT[i]} -ge ${#SERVICES[@]} ]]; then
+    if [ ${FLAG} -ne 1 ]; then
+      echo ""
+    fi
+    echo "Invald service number: ${INPUT[i]}"
+    FLAG=1
+  elif [[ ${FLAG} -ne 1 && ${FLAG} -ne 2 ]]; then
+    if [ "${INPUT[i]}" -eq 0 ]; then
+      if [ ${FLAG} -eq 4 ]; then
+        FLAG=2
+      else
+        FLAG=3
+      fi
+    else
+      if [ ${FLAG} -eq 3 ]; then
+        FLAG=2
+      else
+        FLAG=4
+      fi
+    fi
+  fi
+done
+if [ ${FLAG} -eq 0 ]; then
+  echo ""
+  echo "No services selected"
+  echo ""
+  exit 1
+elif [ ${FLAG} -eq 1 ]; then
+  echo ""
+  exit 1
+elif [ ${FLAG} -eq 2 ]; then
+  echo ""
+  echo "'ALL' service not allowed with other services"
+  echo ""
+  exit 1
+fi
+while :
+do
+  FLAG=0
+  for i in ${!INPUT[@]}; do
+    SVCNBR=${INPUT[i]}
+    for j in ${!INPUT[@]}; do
+      if [ ${j} -ne ${i} ]; then
+        if [ "${SVCNBR}" -eq "${INPUT[j]}" ]; then
+          unset -v INPUT[j]
+          FLAG=1
+          break
+        fi
+      fi
+    done
+    if [ ${FLAG} -eq 1 ]; then
+      break
+    fi
+  done
+  if [ ${FLAG} -eq 0 ]; then
+    break
+  fi
+done
+OIFS=${IFS}
+IFS=$'\n'
+INPUT=($(sort -n <<< "${INPUT[*]}"))
+IFS=${OIFS}
+echo -n "" > /tmp/ipt-tmp
+echo ""
+echo "Services to be allowed -> Rules to be added to iptables:"
+echo ""
+for i in ${!INPUT[@]}; do
+  echo "${SERVICES[${INPUT[i]}]} -> ${RULES[${INPUT[i]}]}"
+  echo -n "${RULES[${INPUT[i]}]} -m comment --comment \"ipt-add : " >> /tmp/ipt-tmp
+  if [ "${FQDN}" = "" ]; then
+    echo "${IP}\"" >> /tmp/ipt-tmp
+  else
+    echo "${FQDN}\"" >> /tmp/ipt-tmp
+  fi
+done
+echo ""
+echo -n "Update iptables now (y/n)? "
+while read -r -n 1 -s answer; do
+  if [[ ${answer} = [yYnN] ]]; then
+    echo "${answer}"
+    if [[ ${answer} = [yY] ]]; then
+      break
+    else
+      rm /tmp/ipt-tmp
+      echo ""
+      echo "Aborted"
+      echo ""
+      exit 1
+    fi
+  fi
+done
+sed -i '/# Added (ipt-add) Entries/r /tmp/ipt-tmp' /etc/iptables/rules.v4
+rm /tmp/ipt-tmp
+if [ "${FQDN}" = "" ]; then
+  echo "${IP}" >> /etc/iptables/ipt-dat
+else
+  echo "${IP} ${FQDN}" >> /etc/iptables/ipt-dat
+fi
+while :
+do
+  if [ ${SYSTEMD} -eq 1 ]; then
+    invoke-rc.d netfilter-persistent restart &> /dev/null
+    STATUS=`systemctl status netfilter-persistent.service | tail -1 | grep "failed"`
+  else
+    STATUS=`service iptables restart | grep "fail"`
+  fi
+  if [ "${STATUS}" = "" ]; then
+    echo ""
+    echo "iptables successfully restarted"
+    echo ""
+    break
+  fi
+  iptables-restore /etc/iptables/rules.v4 2> /tmp/ipt-err
+  ERROR=`cat /tmp/ipt-err`
+  if [[ "${ERROR}" == *Error* ]]; then
+    LINE=`cat /tmp/ipt-err | cut -f 2 -d ":" | tail -2 | head -n 1 | tr -d ' '`
+    sed -i "${LINE} s/^/# Error: /" /etc/iptables/rules.v4
+    echo ""
+    cat /tmp/ipt-err | head -n -1
+  fi
+  rm /tmp/ipt-err
+done

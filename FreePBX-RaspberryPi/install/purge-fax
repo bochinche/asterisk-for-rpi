@@ -1,0 +1,36 @@
+#!/bin/bash
+
+delete()
+{
+  if [ "$(ls -A $1)" != "" ]; then
+    rm $1/*
+  fi
+}
+
+echo ""
+echo -n "Purge HylaFAX fax server (y/n)? "
+while read -r -n 1 -s answer; do
+  if [[ ${answer} = [yYnN] ]]; then
+    echo "${answer}"
+    if [[ ${answer} = [yY] ]]; then
+      break
+    else
+      echo ""
+      echo "Aborted"
+      echo ""
+      exit 1
+    fi
+  fi
+done
+echo ""
+/etc/init.d/hylafax stop > /dev/null
+delete /var/spool/hylafax/archive
+delete /var/spool/hylafax/docq
+delete /var/spool/hylafax/doneq
+delete /var/spool/hylafax/info
+delete /var/spool/hylafax/log
+delete /var/spool/hylafax/pollq
+delete /var/spool/hylafax/recvq
+delete /var/spool/hylafax/sendq
+delete /var/spool/hylafax/tmp
+/etc/init.d/hylafax start > /dev/null

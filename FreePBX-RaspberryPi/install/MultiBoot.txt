@@ -1,0 +1,46 @@
+MultiBoot maintains multiple installations of Raspberry Pi OS and/or Ubuntu on a single storage device.  Only one installation may be active at a time, but changing the active installation requires little more than a reboot.  When Master Boot Record (MBR) partitioning is used (default), a maximum of 3 installations may be present.  When GUID Partition Table (GPT) partitioning is used, a total of 127 installations is theoretically possible, but the practical limit is around 25.  MultiBoot can quickly convert an MBR storage device to GPT at any time.
+
+Each installation occupies its own ROOT partition but shares a common BOOT partition.  The common BOOT partition is saved to and restored from its associated ROOT partition when a different installation is selected.  Each installation has a user defined name for convenient identification.
+
+The initial starting point is a normal installation of Raspberry Pi OS or Ubuntu.  If the starting point is an Ubuntu installation, lbl2id must be run to convert its cmdline.txt and fstab to use PARTUUID instead of LABEL references (for example: lbl2id /dev/sdX).  Additional copies of Raspberry Pi OS and/or Ubuntu are then installed by MultiBoot from normal image files.  The user selects the image file to install, the partition size, and the installation name.  Installations may later be removed, resized, moved to the top or bottom of adjacent free space, or renamed.
+
+A single script (mb) performs all configuration actions as well as selecting the active installation.  Selecting the active installation can be accomplished interactively by executing mb with no parameters or non-interactively by specifying the name of the installation to be activated.  In either case, a reboot (or a halt if a -h or --halt option is used) will occur and the newly selected installation will be active.  Executing the MultiBoot script (mb) with a -i or --identify option will display the currently active installation.
+
+Configuration is performed by executing the MultiBoot script (mb) with a -c or --config option.  The storage device that contains the currently running installation cannot be configured due to the partitioning operations that are involved.  Simply boot from another storage device to perform configuration.  MultiBoot will display a list of storage device candidates to select from for configuration.  Configuration candidates are storage devices whose first partition is VFAT and second partition is EXT4.  The first time MultiBoot configures a storage device, you will be asked for permission to initialize it, which consists of saving the BOOT partition contents to the ROOT partition.
+
+Configuration actions include:
+
+Insert
+
+This action inserts a new installaton.  You first select an 'Unpartitioned_Free_Space' area of sufficient size for the new installation to reside in.  Then you specify the pathto/imagefile to be installed.  Next, a partition size is requested.  Partition size can be entered with a multiplier suffix of K, M, G, or T, for Kilobytes, Megabytes, Gigabytes, or Terabytes.  If no multiplier suffix is given, the number is interpreted as the number of sectors.  Then you must enter a name for the new installation.  Names may contain embedded spaces which will be converted to underscores.  Names may not start with a hyphen.  Maximum name length is 40 characters.  If WiFi is to be enabled (optional), you may specify the pathto/filename to be used for wpa_supplicant.conf.  You may also enable or disable SSH logins.  The final step is to confirm the installation.
+
+Remove
+
+This action removes an existing installation.  Choose the name of the installation you wish to remove and confirm.  The currently active installation cannot be removed until another installation is first made active.
+
+Resize
+
+This action resizes a partition.  A partition can only be expanded into free space above it.  To utilize free space below it, first use the Locate action to move the partition down.  The current, minimum, and maximum partition sizes are displayed.  Partition size can be entered with a multiplier suffix of K, M, G, or T, for Kilobytes, Megabytes, Gigabytes, or Terabytes.  If no multiplier suffix is given, the number is interpreted as the number of sectors.  The partition size may also be specified as 'minimum' or 'maximum'.
+
+Locate
+
+This action moves a partition to the top of free space above it or the bottom of free space below it.  Depending on the speed of the media and size of the partition, this action can take a considerable amount of time to complete.
+
+Rename
+
+This action prompts for a new name and renames the chosen installation following confirmation
+
+Select
+
+This action selects the active installation.  The currently active installation is indicated by a '=' instead of a ':' separating the installation name and partition size.  A reboot does not occur during this configuration action.
+
+MBRGPT
+
+This action converts MBR partitioning to GPT partitioning.
+
+
+NOTE: Do NOT use the 'Expand Filesystem' function in raspi-config!  Doing so will render your storage device unusable.  Always use MultiBoot to manipulate partitions.
+
+image-backup may be used to create backup images of individual partitions which can be later installed by MultiBoot.  The -n or --noexpand option should be used when creating a backup for use with MultiBoot.
+
+MultiBoot is also suitable for use with a Raspberry Pi 2 (SD card only).

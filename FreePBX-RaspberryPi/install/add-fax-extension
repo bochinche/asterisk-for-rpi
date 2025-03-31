@@ -1,0 +1,328 @@
+#!/bin/bash
+
+IAXCONFIGPATH=/etc/iaxmodem/ttyI
+HYLAFAXCONFIGPATH=/etc/hylafax/config.ttyI
+FAXDISPATCHFILE=/etc/hylafax/FaxDispatch
+SYSTEMDFILE=/etc/systemd/system/faxgetty
+
+while :
+do
+  while :
+  do
+    echo ""
+    echo -n "Extension number: "
+    read -r EXTENSION
+    if [[ "${EXTENSION}" =~ ^[0-9]+{2,}$ ]]; then
+      break
+    fi
+    echo ""
+    echo "Extension number must be at least 2 digits"
+  done
+  if [[ -f "${IAXCONFIGPATH}${EXTENSION}" || -f "${HYLAFAXCONFIGPATH}${EXTENSION}" ]]; then
+    echo ""
+    echo -n "Extension number already exists, overwrite (y/n)? "
+    while read -r -n 1 -s answer; do
+      if [[ ${answer} = [yYnN] ]]; then
+        echo "${answer}"
+        if [[ ${answer} = [yY] ]]; then
+          break 2
+        else
+          break 1
+        fi
+      fi
+    done
+  else
+    break
+  fi
+done
+
+while :
+do
+  echo ""
+  echo -n "Fax number: "
+  read -r FAXNUMBER
+  if [[ "${FAXNUMBER}" =~ ^[0-9]+$ ]]; then
+    break
+  fi
+  echo ""
+  echo "Fax number required"
+done
+
+while :
+do
+  echo ""
+  echo -n "Local identifier / Fax name: "
+  read -r FAXNAME
+  if [[ "${FAXNAME}" =~ ^[[:print:]]+$ ]]; then
+    break
+  fi
+  echo ""
+  echo "Local identifier / Fax name required"
+done
+
+while :
+do
+  echo ""
+  echo -n "EMAIL address: "
+  read -r EMAILRECIPIENT
+  if [[ "${EMAILRECIPIENT}" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}$ ]]; then
+    break
+  fi
+  echo ""
+  echo "EMAIL address required"
+done
+
+while :
+do
+  echo ""
+  echo -n "Country code: "
+  read -r COUNTRYCODE
+  if [[ "${COUNTRYCODE}" =~ ^[0-9]+$ ]]; then
+    break
+  fi
+  echo ""
+  echo "Country code required"
+done
+
+while :
+do
+  echo ""
+  echo -n "Area code: "
+  read -r AREACODE
+  if [[ "${AREACODE}" =~ ^[0-9]+$ ]]; then
+    break
+  fi
+  echo ""
+  echo "Area code required"
+done
+
+while :
+do
+  echo ""
+  echo -n "Long distance prefix: "
+  read -r LONGDISTPREFIX
+  if [[ "${LONGDISTPREFIX}" =~ ^[0-9]+$ ]]; then
+    break
+  fi
+  echo ""
+  echo "Long distance prefix required"
+done
+
+while :
+do
+  echo ""
+  echo -n "International prefix: "
+  read -r INTPREFIX
+  if [[ "${INTPREFIX}" = "+" || "${INTPREFIX}" =~ ^[0-9]+$ ]]; then
+    break
+  fi
+  echo ""
+  echo "International prefix required"
+done
+
+echo ""
+echo "Extension number: ${EXTENSION}"
+echo "Fax number: ${FAXNUMBER}"
+echo "Fax name: ${FAXNAME}"
+echo "EMAIL address: ${EMAILRECIPIENT}"
+echo "Country code: ${COUNTRYCODE}"
+echo "Area code: ${AREACODE}"
+echo "Long distance prefix: ${LONGDISTPREFIX}"
+echo "International prefix: ${INTPREFIX}"
+
+echo ""
+echo -n "Continue (y/n)? "
+while read -r -n 1 -s answer; do
+  if [[ ${answer} = [yYnN] ]]; then
+    echo "${answer}"
+    if [[ ${answer} = [yY] ]]; then
+      break
+    else
+      echo ""
+      echo "Aborted"
+      echo ""
+      exit 1
+    fi
+  fi
+done
+echo ""
+
+PORT=4570
+for i in ${IAXCONFIGPATH}*; do
+  if [ -f "${i}" ]; then
+    IAXPORT=`grep port "${i}" | sed "s/port //"`
+    if [ -n "${IAXPORT}" ]; then
+      if [ "${i}" = "${IAXCONFIGPATH}${EXTENSION}" ]; then
+        PORT="${IAXPORT}"
+        break
+      else
+        if [ ${IAXPORT} -ge ${PORT} ]; then
+          PORT=$(( ${IAXPORT} + 1 ))
+        fi
+      fi
+    fi
+  fi
+done
+
+SECRET=`cat /dev/urandom | tr -cd "[:alnum:]" | head -c ${1:-32}`
+
+cat <<EOF > "${IAXCONFIGPATH}${EXTENSION}"
+device /dev/ttyI${EXTENSION}
+owner uucp:uucp
+mode 660
+port ${PORT}
+refresh 0
+server 127.0.0.1
+peername ${EXTENSION}
+secret ${SECRET}
+cidname ${FAXNAME}
+cidnumber ${FAXNUMBER}
+codec ulaw
+EOF
+
+if [ $? -ne 0 ]; then
+  echo ""
+  echo "Unable to create ${IAXCONFIGPATH}${EXTENSION}"
+  echo ""
+  exit 1
+fi
+
+cat <<EOF > "${HYLAFAXCONFIGPATH}${EXTENSION}"
+CountryCode:            ${COUNTRYCODE}
+AreaCode:               ${AREACODE}
+FAXNumber:              ${FAXNUMBER}
+LongDistancePrefix:     ${LONGDISTPREFIX}
+InternationalPrefix:    ${INTPREFIX}
+DialStringRules:        etc/dialrules
+ServerTracing:          1
+SessionTracing:         11
+RecvFileMode:           0666
+LogFileMode:            0600
+DeviceMode:             0600
+RingsBeforeAnswer:      1
+SpeakerVolume:          off
+GettyArgs:              "-h %l dx_%s"
+LocalIdentifier:        "${FAXNAME}"
+TagLineFont:            etc/lutRS18.pcf
+TagLineFormat:          "From %%l|%c|Page %%P of %%T"
+MaxRecvPages:           175
+
+ModemType:              Class1          # use this to supply a hint
+Class1Cmd:              AT+FCLASS=1.0   # command to enter class 1.0
+Class1PPMWaitCmd:       AT+FTS=7        # command to stop and wait before PPM
+Class1TCFWaitCmd:       AT+FTS=7        # command to stop and wait before TCF
+Class1EOPWaitCmd:       AT+FTS=9        # command to stop and wait before EOP
+Class1SwitchingCmd:     AT+FRS=7        # command to stop and listen for silence
+Class1RecvAbortOK:      200             # wait 200ms for abort response
+Class1FrameOverhead:    4               # 4 byte overhead in recvd HDLC frames
+Class1RecvIdentTimer:   40000           # 35+5secs waiting for ident frames
+Class1TCFMaxNonZero:    10              # max 10% of data may be non-zero
+Class1TCFMinRun:        1000            # min run is 2/3rds of TCF duration
+EOF
+
+if [ $? -ne 0 ]; then
+  echo ""
+  echo "Unable to create ${HYLAFAXCONFIGPATH}${EXTENSION}"
+  echo ""
+  exit 1
+fi
+
+if [ -f "${FAXDISPATCHFILE}" ]; then
+  if [ `grep -c ttyI${EXTENSION} ${FAXDISPATCHFILE}` -ne 0 ]; then
+    sed -i "/ttyI${EXTENSION}/,+2d" ${FAXDISPATCHFILE}
+  fi
+  sed -i "s/case \"\$DEVICE\" in/case \"\$DEVICE\" in\n    ttyI$EXTENSION)\n        SENDTO=$EMAILRECIPIENT\n        ;;/" "${FAXDISPATCHFILE}"
+else
+  cat <<EOF > "${FAXDISPATCHFILE}"
+case "\$DEVICE" in
+    ttyI$EXTENSION)
+        SENDTO=$EMAILRECIPIENT
+        ;;
+esac
+FILETYPE=pdf
+EOF
+fi
+
+if [ $? -ne 0 ]; then
+  echo ""
+  echo "Unable to add EMAIL address to ${FAXDISPATCHFILE}"
+  echo ""
+  exit 1
+fi
+
+cat <<EOF > "${SYSTEMDFILE}${EXTENSION}.service"
+[Unit]
+Description=FaxGetty Start Modem ttyI${EXTENSION}
+After=hylafax.service getty.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+Restart=always
+ExecStart=/usr/sbin/faxgetty /dev/ttyI${EXTENSION}
+TimeoutSec=0
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+if [ $? -ne 0 ]; then
+  echo ""
+  echo "Unable to create ${SYSTEMDFILE}${EXTENSION}.service"
+  echo ""
+  exit 1
+fi
+
+systemctl enable faxgetty${EXTENSION}
+service faxgetty${EXTENSION} start
+/etc/init.d/iaxmodem start
+/etc/init.d/iaxmodem restart
+kill -HUP 1
+/etc/init.d/hylafax restart
+
+echo ""
+echo "Configuration has been saved to:"
+echo "${IAXCONFIGPATH}${EXTENSION}"
+echo "${HYLAFAXCONFIGPATH}${EXTENSION}"
+echo "${FAXDISPATCHFILE}"
+echo "${SYSTEMDFILE}${EXTENSION}.service"
+echo ""
+
+if [ $(fwconsole ma list | grep -c bulkhandler) -eq 0 ]; then
+  echo "Installing Bulk Handler module"
+  fwconsole ma downloadinstall bulkhandler
+  fwconsole reload
+fi
+
+echo "extension,name,outboundcid,id,tech,dial,devicetype,user,description,\
+cwtone,cid_masquerade,concurrency_limit,callerid,context,secret,deny,host,\
+permit,port,mailbox,callwaiting_enable,qualify,requirecalltoken" > /tmp/extensions.csv
+
+echo "${EXTENSION},${FAXNAME},\"\"\"${FAXNAME}\"\" <${FAXNUMBER}>\",${EXTENSION},\
+iax2,IAX2/${EXTENSION},fixed,${EXTENSION},${FAXNAME},disabled,${EXTENSION},1,\
+${FAXNAME} <${EXTENSION}>,from-internal,${SECRET},0.0.0.0/0.0.0.0,127.0.0.1,\
+127.0.0.1/255.255.255.255,${PORT},,,yes,no" >> /tmp/extensions.csv
+
+fwconsole bulkimport --type=extensions /tmp/extensions.csv
+
+if [ $? -eq 0 ]; then
+  echo ""
+  fwconsole reload
+  echo ""
+  echo "Extension ${EXTENSION} has been added to FreePBX"
+else
+  echo ""
+  echo "Unable to add extension ${EXTENSION} to FreePBX"
+  echo ""
+  echo "Add the following extension to FreePBX manually:"
+  echo "Extension type: IAX2"
+  echo "User Extension: ${EXTENSION}"
+  echo "Display Name: ${FAXNAME}"
+  echo "Secret: ${SECRET}"
+  echo "host: 127.0.0.1"
+  echo "port: ${PORT}"
+  echo "requirecalltoken: No"
+fi
+rm /tmp/extensions.csv
+echo ""

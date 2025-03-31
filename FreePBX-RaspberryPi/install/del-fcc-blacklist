@@ -1,0 +1,24 @@
+#!/bin/bash
+
+echo ""
+echo -n "Delete existing FCC blacklist from Asterisk (y/n)? "
+while read -r -n 1 -s answer; do
+  if [[ ${answer} = [yYnN] ]]; then
+    echo "${answer}"
+    if [[ ${answer} = [yY] ]]; then
+      break
+    else
+      echo ""
+      echo "Aborted"
+      echo ""
+      exit 1
+    fi
+  fi
+done
+
+echo ""
+echo "Deleting existing FCC blacklist from Asterisk"
+asterisk -rx 'database query "delete from astdb WHERE KEY LIKE \"/blacklist%\" AND value = \"FCC\" "'
+echo ""
+echo "Existing FCC blacklist deleted from Asterisk"
+echo ""

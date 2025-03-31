@@ -1,0 +1,9 @@
+#!/bin/bash
+
+fwconsole ma download framework
+sed -i s'|"20", "ge"|"21", "ge"|' /var/www/html/admin/modules/framework/installlib/installcommand.class.php
+sed -i s'|"20", "ge"|"21", "ge"|' /var/www/html/admin/modules/framework/install.php
+fwconsole ma installlocal
+fwconsole ma upgradeall
+fwconsole setting SIGNATURECHECK 0
+fwconsole reload

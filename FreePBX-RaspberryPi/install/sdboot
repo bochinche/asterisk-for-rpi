@@ -1,0 +1,38 @@
+#!/bin/bash
+
+if [ $(id -u) -ne 0 ]; then
+  echo ""
+  echo "$0 must be run as root user"
+  echo ""
+  exit 1
+fi
+MESSAGE=""
+if [ -b /dev/mmcblk0 ]; then
+  mount /dev/mmcblk0p1 /mnt
+  if [ "$1" = "disable" ]; then
+    if [ -f /mnt/config.txt ]; then
+      mv /mnt/config.txt /mnt/config.txt.bak
+    else
+      MESSAGE="SD card booting is already disabled"
+    fi
+  elif [ "$1" = "enable" ]; then
+    if [ ! -f /mnt/config.txt ]; then
+      mv /mnt/config.txt.bak /mnt/config.txt
+    else
+      MESSAGE="SD card booting is already enabled"
+    fi
+  fi
+  if [ "${MESSAGE}" = "" ]; then
+    if [ -f /mnt/config.txt ]; then
+      MESSAGE="SD card booting is enabled"
+    else
+      MESSAGE="SD card booting is disabled"
+    fi
+  fi
+  umount /mnt
+else
+  MESSAGE="No SD card present"
+fi
+echo ""
+echo "${MESSAGE}"
+echo ""

@@ -1,0 +1,106 @@
+#!/bin/bash
+
+VER_FREEPBX="$(cat /var/www/html/admin/modules/framework/module.xml | grep "<version>" | tail -1 | cut -f 2 -d ">" | sed 's|</version||')"
+
+if [[ "${VER_FREEPBX}" != "13.0" && "${VER_FREEPBX}" != "14.0" && "${VER_FREEPBX}" != "15.0" ]]; then
+  echo ""
+  echo "Only FreePBX 13, FreePBX 14, or FreePBX 15 is supported"
+  echo ""
+  exit 1
+fi
+
+VER_ASTERISK=`asterisk -V | cut -b 10-11`
+
+echo ""
+OLD_VERSION=`asterisk -V | cut -f 2 -d " "`
+echo "Current Asterisk Version: ${OLD_VERSION}"
+if [[ "${VER_ASTERISK}" != "13"  && "${VER_ASTERISK}" != "14"  && "${VER_ASTERISK}" != "15"  && "${VER_ASTERISK}" != "16"  && "${VER_ASTERISK}" != "17" ]]; then
+  echo ""
+  echo "Current Asterisk version not 13, 14, 15, 16, or 17"
+  echo ""
+  exit 1
+fi
+echo ""
+echo -n "Upgrade Asterisk ${VER_ASTERISK} to Asterisk 18 now (y/n)? "
+while read -r -n 1 -s answer; do
+  if [[ ${answer} = [yYnN] ]]; then
+    echo "${answer}"
+    if [[ ${answer} = [yY] ]]; then
+      break
+    else
+      echo ""
+      echo "Aborted"
+      echo ""
+      exit 1
+    fi
+  fi
+done
+fwconsole stop
+
+if [ -f /usr/src/pjproject-*/Makefile ]; then
+  cd /usr/src/pjproject-*
+  make uninstall
+  cd /usr/src
+  rm -r /usr/src/pjproject-*
+fi
+
+if [ -f /usr/src/jansson-*/Makefile ]; then
+  cd /usr/src/jansson-*
+  make uninstall
+  cd /usr/src
+  rm -r /usr/src/jansson-*
+fi
+
+apt-get -y update
+apt-get -y install xmlstarlet libedit-dev
+
+rm -r /usr/src/asterisk*
+rm -r /usr/lib/asterisk/*
+
+cd /usr/src
+wget http://downloads.asterisk.org/pub/telephony/asterisk/asterisk-18-current.tar.gz
+tar xfz asterisk-18-current.tar.gz
+rm asterisk-18-current.tar.gz
+cd /usr/src/asterisk*
+sed -i 's|\(^#define DEVICE_FRAME_SIZE \).*|\164|' addons/chan_mobile.c
+contrib/scripts/get_mp3_source.sh
+./configure --with-pjproject-bundled --with-jansson-bundled --with-bluetooth
+make menuselect.makeopts
+menuselect/menuselect --enable CORE-SOUNDS-EN-WAV --enable CORE-SOUNDS-EN-ULAW menuselect.makeopts
+menuselect/menuselect --enable CORE-SOUNDS-EN-GSM --enable CORE-SOUNDS-EN-G722 menuselect.makeopts
+menuselect/menuselect --enable EXTRA-SOUNDS-EN-WAV --enable EXTRA-SOUNDS-EN-ULAW menuselect.makeopts
+menuselect/menuselect --enable EXTRA-SOUNDS-EN-GSM --enable EXTRA-SOUNDS-EN-G722 menuselect.makeopts
+menuselect/menuselect --enable format_mp3 --enable chan_mobile --enable app_macro menuselect.makeopts
+make
+RESULT=$?
+if [ ${RESULT} -ne 0 ]; then
+  exit ${RESULT}
+fi
+make install
+ldconfig
+rm /usr/src/asterisk*/sounds/*.tar.gz
+rm /var/lib/asterisk/sounds/tmp/*
+
+fwconsole ma upgradeall
+
+fwconsole start
+fwconsole reload
+
+echo "Upgrade Completed"
+COUNTER=0
+while [ ${COUNTER} -lt 60 ]
+do
+  sleep 1
+  VERSION="$(asterisk -rx "core show version" 2> /dev/null)"
+  if [ $? -eq 0 ]; then
+    grep "such" <<< "${VERSION}" > /dev/nul
+    if [ $? -ne 0 ]; then
+      break
+    fi
+  fi
+  (( COUNTER += 1 ))
+done
+NEW_VERSION="$(cat <<< "${VERSION}" | cut -f 2 -d " ")"
+echo ""
+echo "Current Asterisk Version: ${NEW_VERSION}"
+echo ""

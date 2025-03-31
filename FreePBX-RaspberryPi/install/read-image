@@ -1,0 +1,46 @@
+#!/bin/bash
+
+errexit()
+{
+  echo ""
+  echo "$1"
+  echo ""
+  echo "Usage: $0 device file"
+  echo ""
+  exit 1
+}
+
+if [ $(id -u) -ne 0 ]; then
+  errexit "$0 must be run as root user"
+fi
+if [[ (! "$1" =~ ^/dev/sd[a-z]$ && ! "$1" =~ ^/dev/nvme[0-9]n1$ && ! "$1" =~ ^/dev/mmcblk0$) || ! -b "$1" ]]; then
+  errexit "Invalid device: $1"
+fi
+if [ -f "$2" ]; then
+  errexit "File exists: $2"
+fi
+if [ $(mount | grep -c "^$1") -ne 0 ]; then
+  errexit "$1 is in use (mounted)"
+fi
+echo ""
+echo -n "Ok to read $1 to $2 (y/n)? "
+while read -r -n 1 -s answer; do
+  if [[ "${answer}" = [yYnN] ]]; then
+    echo "${answer}"
+    if [[ "${answer}" = [yY] ]]; then
+      break
+    else
+      errexit "Aborted"
+      exit 1
+    fi
+  fi
+done
+echo ""
+dd bs=4M if="$1" of="$2" status=progress
+sync
+echo 3 > /proc/sys/vm/drop_caches
+FILESIZE=$(ls -l "$2" | awk '{print $5}')
+echo ""
+echo "Comparing $1 to $2 (${FILESIZE} bytes)"
+cmp -n ${FILESIZE} "$1" "$2"
+echo ""

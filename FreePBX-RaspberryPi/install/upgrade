@@ -1,0 +1,11 @@
+#!/bin/bash
+
+# Update/Upgrade Raspbian
+
+echo ""
+echo "Updating/Upgrading Raspbian"
+apt-get -y update
+apt-get -y upgrade
+apt-get -y dist-upgrade
+echo "Updating/Upgrading completed"
+echo ""

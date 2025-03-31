@@ -1,0 +1,1314 @@
+#!/bin/bash
+
+trap '{ stty sane; echo ""; errexit "Aborted"; }' SIGINT SIGTERM
+
+NAME_MAX=40
+
+WM_WIDTH=60
+WI_WIDTH=60
+WE_WIDTH=80
+WC_WIDTH=60
+
+MNTPATH="/tmp/multiboot-mnt"
+
+ONEKB=$((1024))
+ONEMB=$((${ONEKB} * ${ONEKB}))
+ONEGB=$((${ONEMB} * ${ONEKB}))
+ONETB=$((${ONEGB} * ${ONEKB}))
+
+errexit()
+{
+  local ERRMSG
+
+  ERRMSG="$1"
+  echo ""
+  echo "${ERRMSG}"
+  echo ""
+  if [ "${MNTED}" = "TRUE" ]; then
+    umount "${BOOTMNT2}/" &> /dev/null
+    umount "${MNTPATH}/" &> /dev/null
+  fi
+  rm -rf "${MNTPATH}/" &> /dev/null
+  rmloop
+  exit 1
+}
+
+ppcom()
+{
+  partprobe
+  sleep 0.25
+}
+
+ckfs()
+{
+  local PARTNO
+  local ERRMSG
+
+  PARTNO="$1"
+  ERRMSG="$2"
+  e2fsck -f -n "${PARTNO}"
+  if [ $? -ne 0 ]; then
+    errexit "Filesystem appears corrupted ${ERRMSG}"
+  fi
+}
+
+getboot()
+{
+  BOOTMNT1="$(sed -n 's|^\S\+\s\+\(/boot\S*\)\s\+.*$|\1|p' "${MNTPATH}/etc/fstab")"
+  BOOTMNT2="${MNTPATH}${BOOTMNT1}"
+  BOOTMNT3="${MNTPATH}/mnt${BOOTMNT1}"
+}
+
+mntpart()
+{
+  local PARTNO
+
+  PARTNO="$1"
+  if [ ! -d "${MNTPATH}/" ]; then
+    mkdir "${MNTPATH}/"
+    if [ $? -ne 0 ]; then
+      errexit "Unable to make partition mount point"
+    fi
+  fi
+  mount "${PARTNO}" "${MNTPATH}/"
+  if [ $? -ne 0 ]; then
+    errexit "Unable to mount ${PARTNO}"
+  fi
+  MNTED=TRUE
+  if [ "${PARTNO}" != "${DEVICE_P}${PART_NOS[0]}" ]; then
+    getboot
+  fi
+}
+
+umntpart()
+{
+  umount "${MNTPATH}/"
+  if [ $? -ne 0 ]; then
+    errexit "Unable to unmount partition"
+  fi
+  MNTED=FALSE
+  rm -r "${MNTPATH}/"
+}
+
+mkloop()
+{
+  LOOP="$(losetup -f --show -P "${IMGFILE}")"
+  if [ $? -ne 0 ]; then
+    errexit "Unable to create loop device"
+  fi
+}
+
+rmloop()
+{
+  if [ "${LOOP}" != "" ]; then
+    losetup -d "${LOOP}"
+    LOOP="" 
+ fi
+}
+
+mntimg()
+{
+  mkloop
+  if [ ! -d "${MNTPATH}/" ]; then
+    mkdir "${MNTPATH}/"
+    if [ $? -ne 0 ]; then
+      errexit "Unable to make ROOT partition mount point"
+    fi
+  fi
+  mount "${LOOP}p2" "${MNTPATH}/"
+  if [ $? -ne 0 ]; then
+    errexit "Unable to mount image ROOT partition"
+  fi
+  MNTED=TRUE
+  getboot
+  if [ ! -d "${BOOTMNT2}/" ]; then
+    mkdir -p "${BOOTMNT2}/"
+    if [ $? -ne 0 ]; then
+      errexit "Unable to make BOOT partition mount point"
+    fi
+  fi
+  mount "${LOOP}p1" "${BOOTMNT2}/"
+  if [ $? -ne 0 ]; then
+    errexit "Unable to mount image BOOT partition"
+  fi
+}
+
+umntimg()
+{
+  umount "${BOOTMNT2}/"
+  if [ $? -ne 0 ]; then
+    errexit "Unable to unmount image BOOT partition"
+  fi
+  umount "${MNTPATH}/"
+  if [ $? -ne 0 ]; then
+    errexit "Unable to unmount image ROOT partition"
+  fi
+  MNTED=FALSE
+  rmloop
+  rm -r "${MNTPATH}/"
+}
+
+getpartnos()
+{
+  local i
+  local NAME
+  local PARTNO
+
+  sfdisk --reorder "${DEVICE}" &> /dev/null
+  ppcom
+  PART_NOS=($(ls ${DEVICE_P}* | sed -n "s|${DEVICE_P}\([0-9]\+\)|\1|p"))
+  PART_NOS=($(printf '%s\n' ${PART_NOS[@]} | sort -n))
+  NAMES=()
+  for i in "${!PART_NOS[@]}"
+  do
+    NAME=""
+    PARTNO=${PART_NOS[i]}
+    mntpart "${DEVICE_P}${PARTNO}"
+    if [ -f "${BOOTMNT2}/mb-id" ]; then
+      read -n ${NAME_MAX} -r NAME < "${BOOTMNT2}/mb-id"
+    fi
+    umntpart
+    if [ "${NAME}" = "" ]; then
+      NAME="Partition_${PARTNO}"
+    fi
+    NAMES[PARTNO]="${NAME}"
+  done
+  mntpart "${DEVICE_P}${PART_NOS[0]}"
+  ROOT_PART="$(sed -n '/^[[:space:]]*#/!s|^.*root=\(\S\+\)\s\+.*$|\1|p' "${MNTPATH}/cmdline.txt")"
+  umntpart
+  if [[ "${ROOT_PART}" =~ ^LABEL=.*$ ]]; then
+    errexit "${DEVICE} uses LABEL= references.  Please run 'lbl2id ${DEVICE}'"
+  elif [[ "${ROOT_PART}" =~ ^PARTUUID=.*$ ]]; then
+    ROOT_PART="$(blkid -l -t "${ROOT_PART}" | sed -n 's|^\(/dev/.*\):.*|\1|p')"
+  else
+    ROOT_PART="${DEVICE_P}$(sed -n "s|.*\([0-9]\+\)|\1|p" <<< "${ROOT_PART}")"
+  fi
+  if [[ ! -b "${ROOT_PART}" || ("${ROOT_PART:5:3}" != "${DEVICE:5:3}") ]]; then
+    errexit "Invalid 'root=' parameter in cmdline.txt : ${ROOT_PART}"
+  fi
+}
+
+prvnxt()
+{
+  local i
+  local PARTNO
+  local OPERATOR
+  local OFFSET
+  local RESULT
+
+  PARTNO="$1"
+  OPERATOR="$2"
+  OFFSET="$3"
+  RESULT=""
+  for i in "${!PART_NOS[@]}"
+  do
+    if [ ${PART_NOS[i]} -eq ${PARTNO} ]; then
+      RESULT="${PART_NOS[i ${OPERATOR} ${OFFSET}]}"
+      break
+    fi
+  done
+  echo "${RESULT}"
+}
+
+getname()
+{
+  local PAD
+  local NAME
+  local PARTNO
+
+  PARTNO="$1"
+  PAD="$2"
+  NAME=${NAMES[PARTNO]}
+  if [ "${PAD}" = "TRUE" ]; then
+    printf "%-${NAME_MAX}s" "${NAME}"
+  else
+    echo "${NAME}"
+  fi
+}
+
+resizefs()
+{
+  local PARTNO
+  local NEW_SIZE
+
+  PARTNO="$1"
+  NEW_SIZE="$2"
+  ckfs "${DEVICE_P}${PARTNO}" "before resize"
+  resize2fs -f "${DEVICE_P}${PARTNO}" "${NEW_SIZE}s"
+  ckfs "${DEVICE_P}${PARTNO}" "after resize"
+}
+
+resizepart()
+{
+  local PARTNO
+  local PART_BEG
+  local NEW_SIZE
+
+  PARTNO="$1"
+  PART_BEG="$2"
+  NEW_SIZE="$3"
+  echo "${PART_BEG},${NEW_SIZE}" | sfdisk -N"${PARTNO}" "${DEVICE}" &> /dev/null
+  ppcom
+}
+
+align()
+{
+  local PART_BEG
+  local UPDN
+
+  PART_BEG="$1"
+  UPDN="$2"
+  if [ "${UPDN}" = "UP" ]; then
+    ((PART_BEG += (IO_OPT - 1)))
+  fi
+  echo "$(((PART_BEG / IO_OPT) * IO_OPT))"
+}
+
+inpkmgt()
+{
+  local VALUE
+  local VALUED
+
+  VALUE="$1"
+  VALUED="${VALUE:0:(${#VALUE} - 1)}"
+  VALUE="$(tr [a-z] [A-Z] <<< "${VALUE}")"
+  if [[ "${VALUE}" =~ ^[0-9]+K$ || "${VALUE}" =~ ^[0-9]+\.[0-9]+K$ ]]; then
+    echo "(${VALUED} * ${ONEKB}) / 512" | bc
+  elif [[ "${VALUE}" =~ ^[0-9]+M$ || "${VALUE}" =~ ^[0-9]+\.[0-9]+M$ ]]; then
+    echo "(${VALUED} * ${ONEMB}) / 512" | bc
+  elif [[ "${VALUE}" =~ ^[0-9]+G$ || "${VALUE}" =~ ^[0-9]+\.[0-9]+G$ ]]; then
+    echo "(${VALUED} * ${ONEGB}) / 512" | bc
+  elif [[ "${VALUE}" =~ ^[0-9]+T$ || "${VALUE}" =~ ^[0-9]+\.[0-9]+T$ ]]; then
+    echo "(${VALUED} * ${ONETB}) / 512" | bc
+  elif [[ "${VALUE}" =~ ^[0-9]+$ ]]; then
+   echo "${VALUE}"
+  else
+   echo "0"
+  fi
+}
+
+outkmgt()
+{
+  local VALUE
+
+  VALUE="$1"
+  ((VALUE *= 512))
+  if [ ${VALUE} -ge ${ONETB} ]; then
+    printf "%.1fT" "$(bc <<< "scale=3 ; ${VALUE} / ${ONETB}")"
+  elif [ ${VALUE} -ge ${ONEGB} ]; then
+    printf "%.1fG" "$(bc <<< "scale=3 ; ${VALUE} / ${ONEGB}")"
+  elif [ ${VALUE} -ge ${ONEMB} ]; then
+    printf "%.1fM" "$(bc <<< "scale=3 ; ${VALUE} / ${ONEMB}")"
+  elif [ ${VALUE} -ge ${ONEKB} ]; then
+    printf "%.1fK" "$(bc <<< "scale=3 ; ${VALUE} / ${ONEKB}")"
+  else
+    printf "%d" "${VALUE}"
+  fi
+}
+
+init()
+{
+  local i
+  local j
+  local DEVICES
+
+  bc --version &> /dev/null
+  if [ $? -eq 127 ]; then
+    echo ""
+    echo "Installing bc"
+    echo ""
+    apt-get update
+    apt-get install bc
+  fi
+  gdisk -l /dev/null &> /dev/null
+  if [ $? -eq 127 ]; then
+    echo ""
+    echo "Installing gdisk"
+    echo ""
+    apt-get update
+    apt-get install gdisk
+  fi
+  echo "Scanning ${DEVICE}"
+  DISK_END=$(blockdev --getsz "${DEVICE}")
+  PTTYPE="$(blkid "${DEVICE}" | sed -n 's|^.*PTTYPE="\(\S\+\)".*|\1|p')"
+  if [ "${PTTYPE}" = "gpt" ]; then
+    ((DISK_END -= 33))
+    MAX_PART=128
+  else
+    MAX_PART=4
+  fi
+  IO_OPT=$(blockdev --getioopt ${DEVICE})
+  if [ ${IO_OPT} -eq 0 ]; then
+    IO_OPT=$((1024 * 1024))
+  fi
+  ((IO_OPT /= 512))  
+  getpartnos
+  DEVICES=($(ls /dev/mmcblk0p* /dev/nvme?n1p* /dev/sd* 2> /dev/null | sed -n 's|\(/dev/.*[0-9]\+\)|\1|p'))
+  if [ ${#DEVICES[@]} -gt 1 ]; then
+    for i in ${!DEVICES[@]}; do
+      if [ ${i} -lt $((${#DEVICES[@]} - 1)) ]; then
+        j=$((i + 1))
+        while [ ${j} -lt ${#DEVICES[@]} ]; do
+          if [ "$(blkid "${DEVICES[i]}" | sed -n 's|^.*PARTUUID="\(\S\+\)".*|\1|p')" = "$(blkid "${DEVICES[j]}" | sed -n 's|^.*PARTUUID="\(\S\+\)".*|\1|p')" ]; then
+              errexit "${DEVICES[i]} and ${DEVICES[j]} have the same PARTUUID : $(blkid "${DEVICES[i]}" | sed -n 's|^.*PARTUUID="\(\S\+\)".*|\1|p')"
+          fi
+        ((j += 1))
+        done
+      fi
+    done
+  fi
+}
+
+scandisk()
+{
+  local i
+  local MODE
+  local FLAG1
+  local FLAG2
+  local PARTNO
+  local PART_BEG
+  local PART_END
+  local PART_LEN
+  local FREE_BEG
+  local FREE_LEN
+
+  MODE="$1"
+  MENU_TEXT=""
+  MENU_LIST=()
+  PART_CNT=0
+  FREE_CNT=0
+  INFO="$(sfdisk -d ${DEVICE})"
+  for i in ${!PART_NOS[@]}
+  do
+    PARTNO=${PART_NOS[i]}
+    PART_BEG=$(sed -n "s|^${DEVICE_P}${PARTNO}\s\+:.*start=\s*\([0-9]\+\).*$|\1|p" <<< "${INFO}")
+    PART_LEN=$(sed -n "s|^${DEVICE_P}${PARTNO}\s\+:.*size=\s*\([0-9]\+\).*$|\1|p" <<< "${INFO}")
+    if [ ${i} -ne 0 ]; then
+      ((PART_CNT += 1))
+      if [ "${ROOT_PART}" = "${DEVICE_P}${PARTNO}" ]; then
+        MENU_TEXT="$(getname "${PARTNO}" "TRUE") = $(outkmgt ${PART_LEN})\n${MENU_TEXT}"
+      else
+        MENU_TEXT="$(getname "${PARTNO}" "TRUE") : $(outkmgt ${PART_LEN})\n${MENU_TEXT}"
+      fi
+      if [[ "${MODE}" = "" || "${MODE}" != "insert" ]]; then
+        if [[ ("${MODE}" != "locate" || ${FLAG2} -ne 0) && (("${MODE}" != "remove" && "${MODE}" != "select") || "${ROOT_PART}" != "${DEVICE_P}${PARTNO}") ]]; then
+          MENU_LIST=(""${PARTNO}" "$(getname "${PARTNO}" "FALSE")"" "${MENU_LIST[@]}")
+          FLAG1=1
+        else
+          FLAG1=0
+        fi
+      fi
+    fi
+    if [ $((i + 1)) -lt ${#PART_NOS[@]} ]; then
+      PART_NXT=$(sed -n "s|^${DEVICE_P}${PART_NOS[$((i + 1))]}\s\+:.*start=\s*\([0-9]\+\).*$|\1|p" <<< "${INFO}")
+    else
+      PART_NXT=${DISK_END}
+    fi
+    PART_END=$((${PART_BEG} + ${PART_LEN}))
+    FREE_LEN=$((${PART_NXT} - ${PART_END}))
+    FREE_BEG=$(align "${PART_END}" "UP")
+    if [ ${FREE_LEN} -gt $((FREE_BEG - PART_END)) ]; then
+      FREE_LEN=$((FREE_LEN - (FREE_BEG - PART_END)))
+    else
+      FREE_LEN=0
+    fi
+    if [ ${FREE_LEN} -ne 0 ]; then
+      ((FREE_CNT += 1))
+      MENU_TEXT="$(printf "%-${NAME_MAX}s" "Unpartitioned_Free_Space_${FREE_CNT}") : $(outkmgt ${FREE_LEN})\n${MENU_TEXT}"
+      if [[ "${MODE}" = "" || "${MODE}" = "insert" ]]; then
+        MENU_LIST=(""${FREE_BEG}:${FREE_LEN}" "Unpartitioned_Free_Space_${FREE_CNT}"" "${MENU_LIST[@]}")
+      fi
+      if [[ ${i} -ne 0 && "${MODE}" = "locate" && ${FLAG1} -eq 0 ]]; then
+        MENU_LIST=(""${PARTNO}" "$(getname "${PARTNO}" "FALSE")"" "${MENU_LIST[@]}")
+      fi
+      FLAG2=1
+    else
+      FLAG2=0
+    fi
+  done
+  TEXT_CNT=$((${PART_CNT} + ${FREE_CNT}))
+}
+
+insert()
+{
+  local i
+  local INFO
+  local NAME
+  local OSVER
+  local PARTNO
+  local WPA_CC
+  local ENA_SSH
+  local ENA_WPA
+  local WPA_CONF
+  local WPA_SSID
+  local WPA_PASS
+  local FREE_NFO
+  local FREE_BEG
+  local FREE_LEN
+  local ROOT_BEG
+  local ROOT_LEN
+  local PART_LEN
+  local PARTUUID
+
+  scandisk "insert"
+  FREE_NFO="$(whiptail --backtitle "MultiBoot" --title "Insert Partition" --notags --menu \
+"\n${MENU_TEXT}" $((8 + ${TEXT_CNT} + ${#MENU_LIST[@]})) ${WM_WIDTH} ${#MENU_LIST[@]} ${MENU_LIST[@]} 3>&1 1>&2 2>&3)"
+  if [[ $? -eq 0 && "${FREE_NFO}" != "" ]]; then
+    FREE_BEG=$(sed -n "s|^\([0-9]\+\):.*$|\1|p" <<< "${FREE_NFO}")
+    FREE_LEN=$(sed -n "s|^.*:\([0-9]\+\)$|\1|p" <<< "${FREE_NFO}")
+    while :
+    do
+      IMGFILE="$(whiptail --backtitle "MultiBoot" --title "Insert Partition" --inputbox \
+"\n${MENU_TEXT}\nImage File:\n" $((11 + ${TEXT_CNT})) ${WI_WIDTH} 3>&1 1>&2 2>&3)"
+      if [[ $? -eq 0 && "${IMGFILE}" != "" ]]; then
+        IMGFILE="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<< "${IMGFILE}")"
+        if [ ! -f "${IMGFILE}" ]; then
+          whiptail --backtitle "MultiBoot" --title "Error" --msgbox "${IMGFILE} not found" 8 ${WE_WIDTH}
+          continue
+        fi
+        mntimg
+        OSVER="$(sed -n 's|^VERSION=".*(\(.*\))"|\1|p' ${MNTPATH}/etc/os-release)"
+        INFO="$(sfdisk -d ${LOOP})"
+        ROOT_BEG=$(sed -n "s|^${LOOP}p2\s\+:.*start=\s*\([0-9]\+\).*$|\1|p" <<< "${INFO}")
+        ROOT_LEN=$(sed -n "s|^${LOOP}p2\s\+:.*size=\s*\([0-9]\+\).*$|\1|p" <<< "${INFO}")
+        umntimg
+        while :
+        do
+          PART_LEN="$(whiptail --backtitle "MultiBoot" --title "Insert Partition" --inputbox \
+"\n${MENU_TEXT}\nPartition Size:\n" $((11 + ${TEXT_CNT})) ${WI_WIDTH} $(outkmgt ${FREE_LEN}) 3>&1 1>&2 2>&3)"
+          if [[ $? -eq 0 && "${PART_LEN}" != "" ]]; then
+            PART_LEN=$(align "$(inpkmgt ${PART_LEN})" "DN")
+            if [ ${PART_LEN} -gt ${FREE_LEN} ]; then
+              PART_LEN=${FREE_LEN}
+            fi
+            if [ ${PART_LEN} -lt ${ROOT_LEN} ]; then
+              whiptail --backtitle "MultiBoot" --title "Error" --msgbox \
+"Image ROOT ($(outkmgt ${ROOT_LEN})) larger than partition size ($(outkmgt ${PART_LEN}))" 8 ${WE_WIDTH}
+              continue
+            fi
+            PARTNO=1
+            for i in "${!PART_NOS[@]}"
+            do
+              if [ ${PARTNO} -ne ${PART_NOS[i]} ]; then
+                break
+              fi
+              ((PARTNO += 1))
+              if [ ${PARTNO} -gt ${MAX_PART} ]; then
+                errexit "Partition table full"
+              fi
+            done
+            while :
+            do
+              NAME="$(whiptail --backtitle "MultiBoot" --title "Insert Partition" --inputbox \
+"\n${MENU_TEXT}\nName:\n" $((11 + ${TEXT_CNT})) ${WI_WIDTH} 3>&1 1>&2 2>&3)"
+              if [ $? -eq 0 ]; then
+                NAME="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<< "${NAME}")"
+                NAME="$(tr [[:blank:]] _ <<< "${NAME}")"
+                if [[ "${NAME}" = "" || ${#NAME} -gt ${NAME_MAX} || ! "${NAME}" =~ ^[[:print:]]+$ || "${NAME}" =~ ^-.*$ ]]; then
+                  whiptail --backtitle "MultiBoot" --title "Error" --msgbox "Invalid Name: ${NAME}" 8 ${WE_WIDTH}
+                  continue
+                fi
+                while :
+                do
+                  WPA_CONF="$(whiptail --backtitle "MultiBoot" --title "Insert Partition" --inputbox \
+"\n${MENU_TEXT}\nWiFi (optional) \"SSID\" \"Password\" \"Country\":\n" $((11 + ${TEXT_CNT})) ${WI_WIDTH} 3>&1 1>&2 2>&3)"
+                  if [ $? -eq 0 ]; then
+                    if [ "${WPA_CONF}" != "" ]; then
+                      WPA_CONF="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<< "${WPA_CONF}")"
+                      WPA_SSID="$(sed -n 's|^"\(.*\)"\s\+".*"\s\+".*"$|\1|p' <<< ${WPA_CONF})"
+                      WPA_PASS="$(sed -n 's|^".*"\s\+"\(.*\)"\s\+".*"$|\1|p' <<< ${WPA_CONF})"
+                      WPA_CC="$(sed -n 's|^".*"\s\+".*"\s\+"\(.*\)"$|\1|p' <<< ${WPA_CONF})"
+                      WPA_CC="$(tr [a-z] [A-Z] <<< ${WPA_CC})"
+                      if [[ "${WPA_SSID}" =~ ^[^[:blank:]][[:print:]]+[^[:blank:]]$ && "${WPA_PASS}" =~ ^[^[:blank:]][[:print:]]+[^[:blank:]]$ && \
+"${WPA_CC}" =~ ^[[:alpha:]][[:alpha:]]$ ]]; then
+                        whiptail --backtitle "MultiBoot" --title "Insert Partition" --yesno "WiFi: \"${WPA_SSID}\" \"${WPA_PASS}\" \"${WPA_CC}\"" 8 ${WC_WIDTH}
+                        ENA_WPA=$?
+                        if [ ${ENA_WPA} -eq 255 ]; then
+                          break
+                        fi
+                        if [ ${ENA_WPA} -ne 0 ]; then
+                          continue
+                        fi
+                      else
+                        whiptail --backtitle "MultiBoot" --title "Error" --msgbox "Invalid WiFi parameter(s): '${WPA_CONF}'" 8 ${WE_WIDTH}
+                        continue
+                      fi
+                    fi
+                    whiptail --backtitle "MultiBoot" --title "Insert Partition" --yesno "Enable SSH?" 8 ${WC_WIDTH}
+                    ENA_SSH=$?
+                    if [ ${ENA_SSH} -ne 255 ]; then
+                      whiptail --backtitle "MultiBoot" --title "Insert Partition" --yesno "Ok to insert ${NAME} ?" 8 ${WC_WIDTH}
+                      if [ $? -eq 0 ]; then
+                        echo "${FREE_BEG},${PART_LEN},L" | sfdisk -N${PARTNO} "${DEVICE}" &> /dev/null
+                        if [ "${PTTYPE}" = "gpt" ]; then
+                          sfdisk --part-label "${DEVICE}" ${PARTNO} "Linux filesystem" &> /dev/null
+                        fi
+                        ppcom
+                        echo ""
+                        dd iflag=skip_bytes,count_bytes skip=$((${ROOT_BEG} * 512)) oflag=seek_bytes \
+seek=$((${FREE_BEG} * 512)) count=$((${ROOT_LEN} * 512)) bs=4M if="${IMGFILE}" of="${DEVICE}" status=progress
+                        ckfs "${DEVICE_P}${PARTNO}" "before resize"
+                        tune2fs -T now "${DEVICE_P}${PARTNO}" &> /dev/null
+                        tune2fs -U random "${DEVICE_P}${PARTNO}" &> /dev/null
+                        resize2fs -f "${DEVICE_P}${PARTNO}"
+                        ckfs "${DEVICE_P}${PARTNO}" "after resize"
+                        mntimg
+                        mount "${DEVICE_P}${PARTNO}" "${MNTPATH}/mnt/"
+                        find "${BOOTMNT3}" -mindepth 1 -delete
+                        cp --preserve=timestamps -r -T "${BOOTMNT2}" "${BOOTMNT3}"
+                        echo "${NAME}" > "${BOOTMNT3}/mb-id"
+                        echo "$(fatlabel ${LOOP}p1 | sed -n '$p')" > "${BOOTMNT3}/mb-bl"
+                        sed -i '/resize-root-fs/d' "${MNTPATH}/mnt/etc/rc.local" &> /dev/null
+                        rm "${MNTPATH}/mnt/etc/resize-root-fs" &> /dev/null
+                        sed -i '/^[[:space:]]*#/!s| init=/usr/lib/raspi-config/init_resize\.sh||' "${BOOTMNT3}/cmdline.txt"
+                        if [ -f "${MNTPATH}/mnt/usr/lib/raspberrypi-sys-mods/firstboot" ]; then
+                          cp "${MNTPATH}/mnt/usr/lib/raspberrypi-sys-mods/firstboot" "${MNTPATH}/mnt/usr/lib/raspberrypi-sys-mods/first-boot"
+                          sed -i 's|firstboot|first-boot|g' "${MNTPATH}/mnt/usr/lib/raspberrypi-sys-mods/first-boot"
+                          sed -i 's|^\(\s*whiptail --infobox \"Resizing root filesystem.*\)$|  return 0\n\n\1|' "${MNTPATH}/mnt/usr/lib/raspberrypi-sys-mods/first-boot"
+                          sed -i '/^[[:space:]]*#/!s| init=/usr/lib/raspberrypi-sys-mods/firstboot| init=/usr/lib/raspberrypi-sys-mods/first-boot|' "${BOOTMNT3}/cmdline.txt"
+                        fi
+                        sed -i 's| - growpart|# - growpart|' "${MNTPATH}/mnt/etc/cloud/cloud.cfg" &> /dev/null
+                        sed -i 's| - resizefs|# - resizefs|' "${MNTPATH}/mnt/etc/cloud/cloud.cfg" &> /dev/null
+                        sed -i "/^[[:space:]]*#/!s|,x-systemd.growfs||" "${MNTPATH}/mnt/etc/fstab"
+                        sed -i "/^[[:space:]]*#/!s|x-systemd.growfs,||" "${MNTPATH}/mnt/etc/fstab"
+                        touch "${MNTPATH}/mnt/etc/growroot-disabled"
+                        PARTUUID="$(blkid ${DEVICE_P}${PARTNO} | sed -n 's|^.*PARTUUID="\(\S\+\)".*|\1|p')"
+                        sed -i "/^[[:space:]]*#/!s|^\(.*root=\)\S\+\(\s\+.*\)$|\1PARTUUID=${PARTUUID}\2|" "${BOOTMNT3}/cmdline.txt"
+                        sed -i "/^[[:space:]]*#/!s|^\S\+\(\s\+/\s\+.*\)$|PARTUUID=${PARTUUID}\1|" "${MNTPATH}/mnt/etc/fstab"
+                        PARTUUID="$(blkid ${DEVICE_P}${PART_NOS[0]} | sed -n 's|^.*PARTUUID="\(\S\+\)".*|\1|p')"
+                        sed -i "/^[[:space:]]*#/!s|^\S\+\(\s\+/boot\S*\s\+vfat\s\+.*\)$|PARTUUID=${PARTUUID}\1|" "${MNTPATH}/mnt/etc/fstab"
+                        rm "${BOOTMNT3}/firstrun.sh" &> /dev/null
+                        sed -i 's| systemd.run.*||g' "${BOOTMNT3}/cmdline.txt"
+                        rm -r "${MNTPATH}/mnt/etc/NetworkManager/system-connections/"
+                        mkdir "${MNTPATH}/mnt/etc/NetworkManager/system-connections/"
+                        rm "${BOOTMNT3}/wpa_supplicant.conf" &> /dev/null
+                        if [ "${WPA_CONF}" != "" ]; then
+                          if [ "${OSVER}" = "bookworm" ]; then
+                            cat <<EOF > "${MNTPATH}/mnt/etc/NetworkManager/system-connections/${WPA_SSID}.nmconnection"
+[connection]
+id=${WPA_SSID}
+uuid=$(cat /proc/sys/kernel/random/uuid)
+type=wifi
+interface-name=wlan0
+
+[wifi]
+mode=infrastructure
+ssid=${WPA_SSID}
+
+[wifi-security]
+auth-alg=open
+key-mgmt=wpa-psk
+psk=${WPA_PASS}
+
+[ipv4]
+method=auto
+
+[ipv6]
+method=auto
+EOF
+                            chmod 600 "${MNTPATH}/mnt/etc/NetworkManager/system-connections/${WPA_SSID}.nmconnection"
+                            cat <<EOF > "${BOOTMNT3}/firstrun.sh"
+#!/bin/bash
+
+set +e
+
+raspi-config nonint do_wifi_country ${WPA_CC}
+rm -f ${BOOTMNT1}/firstrun.sh
+sed -i 's| systemd.run.*||g' ${BOOTMNT1}/cmdline.txt
+exit 0
+EOF
+                            sed -i "/^[[:space:]]*#/!s|^\(.*\)$|\1 systemd.run=${BOOTMNT1}/firstrun.sh systemd.run_success_action=reboot systemd.unit=kernel-command-line.target|" "${BOOTMNT3}/cmdline.txt"
+                          else
+                            cat <<EOF > "${BOOTMNT3}/wpa_supplicant.conf"
+ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev
+country=${WPA_CC}
+update_config=1
+
+network={
+ ssid="${WPA_SSID}"
+ psk="${WPA_PASS}"
+}
+EOF
+                          fi
+                        fi
+                        rm "${BOOTMNT3}/ssh" "${BOOTMNT3}/ssh.txt" &> /dev/null
+                        if [ ${ENA_SSH} -eq 0 ]; then
+                          touch "${BOOTMNT3}/ssh"
+                        fi
+                        umount "${MNTPATH}/mnt/"
+                        umntimg
+                        getpartnos
+                      fi
+                    fi
+                  fi
+                  break
+                done
+              fi
+              break
+            done
+          fi
+          break
+        done
+      fi
+      break
+    done
+  fi
+}
+
+remove()
+{
+  local PARTNO
+
+  scandisk "remove"
+  PARTNO="$(whiptail --backtitle "MultiBoot" --title "Remove Partition" --notags --menu \
+"\n${MENU_TEXT}" $((8 + ${TEXT_CNT} + ${#MENU_LIST[@]})) ${WM_WIDTH} ${#MENU_LIST[@]} ${MENU_LIST[@]} 3>&1 1>&2 2>&3)"
+  if [[ $? -eq 0 && "${PARTNO}" != "" ]]; then
+    whiptail --backtitle "MultiBoot" --title "Remove Partition" --yesno "Ok to remove $(getname "${PARTNO}" "FALSE") ?" 8 ${WC_WIDTH}
+    if [ $? -eq 0 ]; then
+      sfdisk --delete "${DEVICE}" "${PARTNO}" &> /dev/null
+      ppcom
+      getpartnos
+    fi
+  fi
+}
+
+resize()
+{
+  local INFO
+  local PARTNO
+  local PART_BEG
+  local PART_LEN
+  local PART_NXT
+  local PART_MIN
+  local PART_MAX
+  local BLK_SIZE
+  local NEW_SIZE
+
+  scandisk "resize"
+  PARTNO="$(whiptail --backtitle "MultiBoot" --title "Resize Partition" --notags --menu \
+"\n${MENU_TEXT}" $((8 + ${TEXT_CNT} + ${#MENU_LIST[@]})) ${WM_WIDTH} ${#MENU_LIST[@]} ${MENU_LIST[@]} 3>&1 1>&2 2>&3)"
+  if [[ $? -eq 0 && "${PARTNO}" != "" ]]; then
+    INFO="$(sfdisk -d ${DEVICE})"
+    PART_BEG=$(sed -n "s|^${DEVICE_P}${PARTNO}\s\+:.*start=\s*\([0-9]\+\).*$|\1|p" <<< "${INFO}")
+    PART_LEN=$(sed -n "s|^${DEVICE_P}${PARTNO}\s\+:.*size=\s*\([0-9]\+\).*$|\1|p" <<< "${INFO}")
+    if [ "$(prvnxt "${PARTNO}" "+" "1")" = "" ]; then
+      PART_NXT=${DISK_END}
+    else
+      PART_NXT=$(sed -n "s|^${DEVICE_P}$(prvnxt "${PARTNO}" "+" "1")\s\+:.*start=\s*\([0-9]\+\).*$|\1|p" <<< "${INFO}")
+    fi
+    PART_MAX=$((${PART_NXT} - ${PART_BEG}))
+    BLK_SIZE=$(tune2fs -l "${DEVICE_P}${PARTNO}" 2> /dev/null | sed -n 's|^Block size:\s*\(.*\)|\1|p')
+    PART_MIN=$(($(resize2fs -P "${DEVICE_P}${PARTNO}" 2> /dev/null | sed -n 's|^Estimated minimum size of the filesystem:\s*\(.*\)|\1|p') * (${BLK_SIZE} / 512)))
+    while :
+    do
+      NEW_SIZE="$(whiptail --backtitle "MultiBoot" --title "Resize Partition" --inputbox \
+"\n${MENU_TEXT}\nCurrent Size: $(outkmgt ${PART_LEN})\nMinimum Size: $(outkmgt ${PART_MIN})\n\
+Maximum Size: $(outkmgt ${PART_MAX})\n\nPartition Size:" \
+$((15 + ${TEXT_CNT})) ${WI_WIDTH} "$(outkmgt ${PART_MAX})" 3>&1 1>&2 2>&3)"
+      if [[ $? -eq 0 && "${NEW_SIZE}" != "" ]]; then
+        NEW_SIZE="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<< "${NEW_SIZE}")"
+        NEW_SIZE="$(tr [A-Z] [a-z] <<< "${NEW_SIZE}")"
+        if [ "${NEW_SIZE}" = "minimum" ]; then
+          NEW_SIZE=${PART_MIN}
+        elif [ "${NEW_SIZE}" = "maximum" ]; then
+          NEW_SIZE=${PART_MAX}
+        fi
+        NEW_SIZE=$(inpkmgt ${NEW_SIZE})
+        if [ ${NEW_SIZE} = 0 ]; then
+          whiptail --backtitle "MultiBoot" --title "Error" --msgbox "Invalid partition size: ${NEW_SIZE}" 8 ${WE_WIDTH}
+          continue
+        fi
+        if [ ${NEW_SIZE} -lt ${PART_MIN} ]; then
+          NEW_SIZE=${PART_MIN}
+        elif [ ${NEW_SIZE} -gt ${PART_MAX} ]; then
+          NEW_SIZE=${PART_MAX}
+        fi
+        NEW_SIZE=$(align "${NEW_SIZE}" "DN")
+        whiptail --backtitle "MultiBoot" --title "Resize Partition" --yesno "Ok to resize $(getname "${PARTNO}" "FALSE") ?" 8 ${WC_WIDTH}
+        if [ $? -eq 0 ]; then
+          if [ ${NEW_SIZE} -lt ${PART_LEN} ]; then
+            resizefs "${PARTNO}" "${NEW_SIZE}"
+            resizepart  "${PARTNO}" "${PART_BEG}" "${NEW_SIZE}"
+          elif [ ${NEW_SIZE} -gt ${PART_LEN} ]; then
+            resizepart  "${PARTNO}" "${PART_BEG}" "${NEW_SIZE}"
+            resizefs "${PARTNO}" "${NEW_SIZE}"
+          fi
+        fi
+      fi
+      break
+    done
+  fi
+}
+
+locate()
+{
+  local INFO
+  local PARTNO
+  local UPRLWR
+  local PART_BEG
+  local PART_LEN
+  local PART_PRV
+  local PART_NXT
+  local DEST_BEG
+  local MOVE_UPR
+  local MOVE_LWR
+
+  scandisk "locate"
+  PARTNO="$(whiptail --backtitle "MultiBoot" --title "Locate Partition" --notags --menu \
+"\n${MENU_TEXT}" $((8 + ${TEXT_CNT} + ${#MENU_LIST[@]})) ${WM_WIDTH} ${#MENU_LIST[@]} ${MENU_LIST[@]} 3>&1 1>&2 2>&3)"
+  if [[ $? -eq 0 && "${PARTNO}" != "" ]]; then
+    INFO="$(sfdisk -d ${DEVICE})"
+    PART_BEG=$(sed -n "s|^${DEVICE_P}$(prvnxt "${PARTNO}" "-" "1")\s\+:.*start=\s*\([0-9]\+\).*$|\1|p" <<< "${INFO}")
+    PART_LEN=$(sed -n "s|^${DEVICE_P}$(prvnxt "${PARTNO}" "-" "1")\s\+:.*size=\s*\([0-9]\+\).*$|\1|p" <<< "${INFO}")
+    PART_PRV=$((${PART_BEG} + ${PART_LEN}))
+    if [ "$(prvnxt "${PARTNO}" "+" "1")" = "" ]; then
+      PART_NXT=${DISK_END}
+    else
+      PART_NXT=$(sed -n "s|^${DEVICE_P}$(prvnxt "${PARTNO}" "+" "1")\s\+:.*start=\s*\([0-9]\+\).*$|\1|p" <<< "${INFO}")
+    fi
+    PART_BEG=$(sed -n "s|^${DEVICE_P}${PARTNO}\s\+:.*start=\s*\([0-9]\+\).*$|\1|p" <<< "${INFO}")
+    PART_LEN=$(sed -n "s|^${DEVICE_P}${PARTNO}\s\+:.*size=\s*\([0-9]\+\).*$|\1|p" <<< "${INFO}")
+    MENU_LIST=()
+    DEST_BEG=$((PART_NXT - PART_LEN))
+    DEST_BEG=$(align "${DEST_BEG}" "DN")
+    if [ ${DEST_BEG} -gt ${PART_BEG} ]; then
+      MOVE_UPR=$((DEST_BEG - PART_BEG))
+      MENU_LIST+=("UPPER Upper")
+    fi
+    DEST_BEG=$(align "${PART_PRV}" "UP")
+    if [ ${DEST_BEG} -lt ${PART_BEG} ]; then
+      MOVE_LWR=$((PART_BEG - DEST_BEG))
+      MENU_LIST+=("LOWER Lower")
+    fi
+    UPRLWR="$(whiptail --backtitle "MultiBoot" --title "Locate Partition" --notags --menu \
+"\n${MENU_TEXT}" $((8 + ${TEXT_CNT} + ${#MENU_LIST[@]})) ${WM_WIDTH} ${#MENU_LIST[@]} ${MENU_LIST[@]} 3>&1 1>&2 2>&3)"
+    if [[ $? -eq 0 && "${UPRLWR}" != "" ]]; then
+      whiptail --backtitle "MultiBoot" --title "Locate Partition" --yesno "Ok to locate $(getname "${PARTNO}" "FALSE") ?" 8 ${WC_WIDTH}
+      if [ $? -eq 0 ]; then
+        ckfs "${DEVICE_P}${PARTNO}" "before move"
+        echo ""
+        echo "Moving $(getname "${PARTNO}" "FALSE") (this will take a while)"
+        case "${UPRLWR}" in
+          UPPER)
+            echo "+${MOVE_UPR}," | sfdisk -N${PARTNO} --move-data=/dev/null "${DEVICE}" &> /dev/null
+            ;;
+
+          LOWER)
+            echo "-${MOVE_LWR}," | sfdisk -N${PARTNO} --move-data=/dev/null "${DEVICE}" &> /dev/null
+            ;;
+        esac
+        ckfs "${DEVICE_P}${PARTNO}" "after move"
+      fi
+    fi
+  fi
+}
+
+rename()
+{
+  local NAME
+  local PARTNO
+
+  scandisk "rename"
+  PARTNO="$(whiptail --backtitle "MultiBoot" --title "Rename Partition" --notags --menu \
+"\n${MENU_TEXT}" $((8 + ${TEXT_CNT} + ${#MENU_LIST[@]})) ${WM_WIDTH} ${#MENU_LIST[@]} ${MENU_LIST[@]} 3>&1 1>&2 2>&3)"
+  if [[ $? -eq 0 && "${PARTNO}" != "" ]]; then
+    while :
+    do
+      NAME="$(whiptail --backtitle "MultiBoot" --title "Rename Partition" --inputbox \
+"\n${MENU_TEXT}\nName:\n" $((11 + ${TEXT_CNT})) ${WI_WIDTH} "$(getname "${PARTNO}" "FALSE")" 3>&1 1>&2 2>&3)"
+      if [ $? -eq 0 ]; then
+        NAME="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<< "${NAME}")"
+        NAME="$(tr [[:blank:]] _ <<< "${NAME}")"
+        if [[ "${NAME}" = "" || ${#NAME} -gt ${NAME_MAX} || ! "${NAME}" =~ ^[[:print:]]+$ || "${NAME}" =~ ^-.*$ ]]; then
+          whiptail --backtitle "MultiBoot" --title "Error" --msgbox "Invalid Name: ${NAME}" 8 ${WE_WIDTH}
+          continue
+        fi
+        whiptail --backtitle "MultiBoot" --title "Rename Partition" --yesno "Ok to rename $(getname "${PARTNO}" "FALSE") ?" 8 ${WC_WIDTH}
+        if [ $? -eq 0 ]; then
+          mntpart "${DEVICE_P}${PARTNO}"
+          echo "${NAME}" > "${BOOTMNT2}/mb-id"
+          umntpart
+          if [ "${ROOT_PART}" = "${DEVICE_P}${PARTNO}" ]; then
+            mntpart "${DEVICE_P}${PART_NOS[0]}"
+            echo "${NAME}" > "${MNTPATH}/mb-id"
+            umntpart
+          fi
+          NAMES[PARTNO]=${NAME}
+        fi
+      fi
+      break
+    done
+  fi
+}
+
+select_()
+{
+  local DIFFS
+  local SRCDST
+  local PARTNO
+  local PARTUUID
+
+  scandisk "select"
+  PARTNO="$(whiptail --backtitle "MultiBoot" --title "Select Partition" --notags --menu \
+"\n${MENU_TEXT}\n" $((8 + ${TEXT_CNT} + ${#MENU_LIST[@]})) ${WM_WIDTH} ${#MENU_LIST[@]} ${MENU_LIST[@]} 3>&1 1>&2 2>&3)"
+  if [[ $? -eq 0 && "${PARTNO}" != "" ]]; then
+    whiptail --backtitle "MultiBoot" --title "Select Partition" --yesno "Ok to select $(getname "${PARTNO}" "FALSE") ?" 8 ${WC_WIDTH}
+    if [ $? -eq 0 ]; then
+      echo ""
+      echo "Saving BOOT partition"
+      mntpart "${ROOT_PART}"
+      mount "${DEVICE_P}${PART_NOS[0]}" "${MNTPATH}/mnt/"
+      echo "$(fatlabel ${DEVICE_P}${PART_NOS[0]} | sed -n '$p')" > "${MNTPATH}/mnt/mb-bl"
+      find "${BOOTMNT2}" -mindepth 1 -delete
+      cp -p -r -T "${MNTPATH}/mnt" "${BOOTMNT2}"
+      umount "${MNTPATH}/mnt/"
+      umntpart
+      echo ""
+      echo "Restoring BOOT partition"
+      mntpart "${DEVICE_P}${PARTNO}"
+      mount "${DEVICE_P}${PART_NOS[0]}" "${MNTPATH}/mnt/"
+      find "${MNTPATH}/mnt" -mindepth 1 -delete
+      cp --preserve=timestamps -r -T "${BOOTMNT2}" "${MNTPATH}/mnt"
+      RETCNT=0
+      while :
+      do
+        sync
+        echo 3 > /proc/sys/vm/drop_caches
+        DIFFS="$(diff -q -r "${BOOTMNT2}" "${MNTPATH}/mnt")"
+        if [ $? -ne 0 ]; then
+          ((RETCNT += 1))
+          echo -e -n "\r[ Failed / Retrying: ${RETCNT} ] "
+          while read SRCDST
+          do
+            cp --preserve=timestamps -T ${SRCDST}
+          done <<< "$(sed -n "s|^Files \(\S\+\) and \(\S\+\) differ$|\1 \2|p" <<< ${DIFFS})"
+        else
+          if [ ${RETCNT} -ne 0 ]; then
+            echo ""
+          fi
+          break
+        fi
+      done
+      PARTUUID="$(blkid ${DEVICE_P}${PARTNO} | sed -n 's|^.*PARTUUID="\(\S\+\)".*|\1|p')"
+      sed -i "/^[[:space:]]*#/!s|^\(.*root=\)\S\+\(\s\+.*\)$|\1PARTUUID=${PARTUUID}\2|" "${MNTPATH}/mnt/cmdline.txt"
+      sed -i "/^[[:space:]]*#/!s|^\S\+\(\s\+/\s\+.*\)$|PARTUUID=${PARTUUID}\1|" "${MNTPATH}/etc/fstab"
+      PARTUUID="$(blkid ${DEVICE_P}${PART_NOS[0]} | sed -n 's|^.*PARTUUID="\(\S\+\)".*|\1|p')"
+      sed -i "/^[[:space:]]*#/!s|^\S\+\(\s\+/boot\S*\s\+vfat\s\+.*\)$|PARTUUID=${PARTUUID}\1|" "${MNTPATH}/etc/fstab"
+      if [ -f "${MNTPATH}/mnt/mb-bl" ]; then
+        BOOTLBL="$(cat ${MNTPATH}/mnt/mb-bl)"
+      else
+        BOOTLBL="bootfs"
+      fi
+      fatlabel "${DEVICE_P}${PART_NOS[0]}" "${BOOTLBL}" &> /dev/null
+      umount "${MNTPATH}/mnt/"
+      umntpart
+      ROOT_PART="${DEVICE_P}${PARTNO}"
+    fi
+  fi
+}
+
+mbrgpt()
+{
+  local i
+  local INFO
+  local EXPAND
+  local PARTNO
+  local PART_BEG
+  local PART_LEN
+  local BLK_SIZE
+  local NEW_SIZE
+  local PARTUUID
+
+  whiptail --backtitle "MultiBoot" --title "Convert MBR to GPT" --yesno "Ok to convert MBR to GPT on ${DEVICE} ?" 8 ${WC_WIDTH}
+  if [ $? -eq 0 ]; then
+    EXPAND=FALSE
+    sgdisk -z "${DEVICE}" &> /dev/null
+    INFO="$(gdisk -l ${DEVICE} 2> /dev/null)"
+    if [ $(grep -c "Warning! Secondary partition table overlaps the last partition" <<< "${INFO}") -ne 0 ]; then
+      PARTNO=${PART_NOS[$((${#PART_NOS[@]} - 1))]}
+      INFO="$(sfdisk -d ${DEVICE})"
+      PART_BEG=$(sed -n "s|^${DEVICE_P}${PARTNO}\s\+:.*start=\s*\([0-9]\+\).*$|\1|p" <<< "${INFO}")
+      PART_LEN=$(sed -n "s|^${DEVICE_P}${PARTNO}\s\+:.*size=\s*\([0-9]\+\).*$|\1|p" <<< "${INFO}")
+      BLK_SIZE=$(tune2fs -l "${DEVICE_P}${PARTNO}" 2> /dev/null | sed -n 's|^Block size:\s*\(.*\)|\1|p')
+      PART_MIN=$(($(resize2fs -P "${DEVICE_P}${PARTNO}" 2> /dev/null | sed -n 's|^Estimated minimum size of the filesystem:\s*\(.*\)|\1|p') * (${BLK_SIZE} / 512)))
+      resizefs "${PARTNO}" "${PART_MIN}"
+      resizepart  "${PARTNO}" "${PART_BEG}" "${PART_MIN}"
+      EXPAND=TRUE
+    fi
+    gdisk "${DEVICE}" <<EOF &> /dev/null
+r
+h
+1
+n
+0c
+n
+n
+w
+y
+EOF
+    if [ "${EXPAND}" = "TRUE" ]; then
+      NEW_SIZE=$(align "$((PART_LEN - 33))" "DN")
+      resizepart  "${PARTNO}" "${PART_BEG}" "${NEW_SIZE}"
+      resizefs "${PARTNO}" "${NEW_SIZE}"
+    fi
+    for i in ${!PART_NOS[@]}
+    do
+      if [ ${i} -ne 0 ]; then
+        PARTNO=${PART_NOS[i]}
+        mntpart "${DEVICE_P}${PARTNO}"
+        mount "${DEVICE_P}${PART_NOS[0]}" "${MNTPATH}/mnt/"
+        PARTUUID="$(blkid ${DEVICE_P}${PARTNO} | sed -n 's|^.*PARTUUID="\(\S\+\)".*|\1|p')"
+        if [ "${ROOT_PART}" = "${DEVICE_P}${PARTNO}" ]; then
+          sed -i "/^[[:space:]]*#/!s|^\(.*root=\)\S\+\(\s\+.*\)$|\1PARTUUID=${PARTUUID}\2|" "${MNTPATH}/mnt/cmdline.txt"
+        fi
+        sed -i "/^[[:space:]]*#/!s|^\(.*root=\)\S\+\(\s\+.*\)$|\1PARTUUID=${PARTUUID}\2|" "${BOOTMNT2}/cmdline.txt"
+        sed -i "/^[[:space:]]*#/!s|^\S\+\(\s\+/\s\+.*\)$|PARTUUID=${PARTUUID}\1|" "${MNTPATH}/etc/fstab"
+        PARTUUID="$(blkid ${DEVICE_P}${PART_NOS[0]} | sed -n 's|^.*PARTUUID="\(\S\+\)".*|\1|p')"
+        sed -i "/^[[:space:]]*#/!s|^\S\+\(\s\+/boot\S*\s\+vfat\s\+.*\)$|PARTUUID=${PARTUUID}\1|" "${MNTPATH}/etc/fstab"
+        umount "${MNTPATH}/mnt/"
+        umntpart
+      fi
+    done
+    init
+  fi
+}
+
+initialize()
+{
+  local PARTUUID
+
+  whiptail --backtitle "MultiBoot" --title "Initialize" --yesno "Ok to initialize ${DEVICE} ?" 8 ${WC_WIDTH}
+  if [ $? -eq 0 ]; then
+    echo ""
+    echo "Saving BOOT partition"
+    mntpart "${ROOT_PART}"
+    mount "${DEVICE_P}${PART_NOS[0]}" "${MNTPATH}/mnt/"
+    echo "$(fatlabel ${DEVICE_P}${PART_NOS[0]} | sed -n '$p')" > "${MNTPATH}/mnt/mb-bl"
+    sed -i '/resize-root-fs/d' "${MNTPATH}/etc/rc.local" &> /dev/null
+    rm "${MNTPATH}/etc/resize-root-fs" &> /dev/null
+    sed -i '/^[[:space:]]*#/!s| init=/usr/lib/raspi-config/init_resize\.sh||' "${MNTPATH}/mnt/cmdline.txt"
+    if [ -f "${MNTPATH}/usr/lib/raspberrypi-sys-mods/firstboot" ]; then
+      cp "${MNTPATH}/usr/lib/raspberrypi-sys-mods/firstboot" "${MNTPATH}/usr/lib/raspberrypi-sys-mods/first-boot"
+      sed -i 's|firstboot|first-boot|g' "${MNTPATH}/usr/lib/raspberrypi-sys-mods/first-boot"
+      sed -i 's|^\(\s*whiptail --infobox \"Resizing root filesystem.*\)$|  return 0\n\n\1|' "${MNTPATH}/usr/lib/raspberrypi-sys-mods/first-boot"
+      sed -i '/^[[:space:]]*#/!s| init=/usr/lib/raspberrypi-sys-mods/firstboot| init=/usr/lib/raspberrypi-sys-mods/first-boot|' "${MNTPATH}/mnt/cmdline.txt"
+    fi
+    sed -i 's| - growpart|# - growpart|' "${MNTPATH}/etc/cloud/cloud.cfg" &> /dev/null
+    sed -i 's| - resizefs|# - resizefs|' "${MNTPATH}/etc/cloud/cloud.cfg" &> /dev/null
+    sed -i "/^[[:space:]]*#/!s|,x-systemd.growfs||" "${MNTPATH}/etc/fstab"
+    sed -i "/^[[:space:]]*#/!s|x-systemd.growfs,||" "${MNTPATH}/etc/fstab"
+    touch "${MNTPATH}/etc/growroot-disabled"
+    PARTUUID="$(blkid ${DEVICE_P}${PART_NOS[1]} | sed -n 's|^.*PARTUUID="\(\S\+\)".*|\1|p')"
+    sed -i "/^[[:space:]]*#/!s|^\(.*root=\)\S\+\(\s\+.*\)$|\1PARTUUID=${PARTUUID}\2|" "${MNTPATH}/mnt/cmdline.txt"
+    sed -i "/^[[:space:]]*#/!s|^\S\+\(\s\+/\s\+.*\)$|PARTUUID=${PARTUUID}\1|" "${MNTPATH}/etc/fstab"
+    PARTUUID="$(blkid ${DEVICE_P}${PART_NOS[0]} | sed -n 's|^.*PARTUUID="\(\S\+\)".*|\1|p')"
+    sed -i "/^[[:space:]]*#/!s|^\S\+\(\s\+/boot\S*\s\+vfat\s\+.*\)$|PARTUUID=${PARTUUID}\1|" "${MNTPATH}/etc/fstab"
+    find "${BOOTMNT2}" -mindepth 1 -delete
+    cp -p -r -T "${MNTPATH}/mnt" "${BOOTMNT2}"
+    umount "${MNTPATH}/mnt/"
+    umntpart
+    ckfs "${ROOT_PART}" "before resize"
+    tune2fs -T now "${ROOT_PART}" &> /dev/null
+    tune2fs -U random "${ROOT_PART}" &> /dev/null
+    resize2fs -f "${ROOT_PART}"
+    ckfs "${ROOT_PART}" "after resize"
+    fdisk "$(sed 's/[0-9]\+$//' <<< "${ROOT_PART}")" <<EOF &> /dev/null
+w
+EOF
+    rename
+    mntpart "${DEVICE_P}${PART_NOS[0]}"
+    if [ ! -f "${MNTPATH}/mb-id" ]; then
+      echo "" > "${MNTPATH}/mb-id"
+    fi
+    umntpart
+    INITED=TRUE
+  fi
+}
+
+LOOP=""
+MNTED=FALSE
+if [ $(id -u) -ne 0 ]; then
+  errexit "Must be run as root user: sudo $0"
+fi
+PGMNAME="$(basename $0)"
+for PID in $(pidof -x -o %PPID "${PGMNAME}"); do
+  if [ ${PID} -ne $$ ]; then
+    errexit "${PGMNAME} is already running"
+  fi
+done
+BOOTMNT="$(sed -n 's|^\S\+\s\+\(/boot\S*\)\s\+.*$|\1|p' /etc/fstab)"
+ROOT_DEV="$(sed 's/[0-9]\+$//' <<< "$(mount | sed -n 's|^\(/dev/.*\) on / .*|\1|p')")"
+if [[ "${ROOT_DEV}" = "/dev/mmcblk0p" || "${ROOT_DEV}" =~ ^/dev/nvme[0-9]n1p$ ]]; then
+  ROOT_DEV="${ROOT_DEV:0:(${#ROOT_DEV} - 1)}"
+fi
+NAME=""
+HALT=FALSE
+CONFIG=FALSE
+while [ $# -gt 0 ]; do
+  case "$1" in
+
+    -c|--config)
+      CONFIG=TRUE
+      shift
+      ;;
+
+    -h|--halt)
+      HALT=TRUE
+      shift
+      ;;
+
+    -i|--identify)
+      if [ -f "${BOOTMNT}/mb-id" ]; then
+        echo ""
+        read -n ${NAME_MAX} -r NAME < "${BOOTMNT}/mb-id"
+        printf "Current partition: %s\n" "${NAME}"
+        echo ""
+      fi
+      exit
+      ;;
+
+    -*|--*)
+      errexit "Unknown option: $1"
+      shift
+      ;;
+
+    *)
+      NAME="$1"
+      NAME="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<< "${NAME}")"
+      NAME="$(tr [[:blank:]] _ <<< "${NAME}")"
+      shift
+      ;;
+
+  esac
+done
+if [ "${CONFIG}" = "FALSE" ]; then
+  if [ ! -f "${BOOTMNT}/mb-id" ]; then
+    errexit "Not a MultiBoot storage device"
+  fi
+  DEVICE="${ROOT_DEV}"
+  DEVICE_P="${DEVICE}"
+  if [[ "${DEVICE_P}" = "/dev/mmcblk0" || "${DEVICE_P}" =~ ^/dev/nvme[0-9]n1$ ]]; then
+    DEVICE_P+='p'
+  fi
+  init
+  scandisk "select"
+  if [ ${#MENU_LIST[@]} -eq 0 ]; then
+    errexit "No alternate partitions available"
+  fi
+  if [ "${NAME}" = "" ]; then
+    while :
+    do
+      PARTNO="$(whiptail --backtitle "MultiBoot" --title "Select Partition" --notags --menu \
+"\n${MENU_TEXT}\n" $((8 + ${TEXT_CNT} + ${#MENU_LIST[@]})) ${WM_WIDTH} ${#MENU_LIST[@]} ${MENU_LIST[@]} 3>&1 1>&2 2>&3)"
+      if [[ $? -ne 0 || "${PARTNO}" = "" ]]; then
+        errexit "Aborted"
+      fi
+      whiptail --backtitle "MultiBoot" --title "Select Partition" --yesno "Ok to select $(getname "${PARTNO}" "FALSE") ?" 8 ${WC_WIDTH}
+      if [ $? -eq 0 ]; then
+        break
+      fi
+    done
+  else
+    read -n ${NAME_MAX} -r CUR_NAME < "${BOOTMNT}/mb-id"
+    if [ "$(tr [A-Z] [a-z] <<< "${CUR_NAME}")" = "$(tr [A-Z] [a-z] <<< "${NAME}")" ]; then
+      errexit "${CUR_NAME} is the current partition"
+    fi
+    PARTNO=0
+    for i in ${!MENU_LIST[@]}
+    do
+      read -r PARTNO PARTNAME <<< "${MENU_LIST[i]}"
+      if [ "$(tr [A-Z] [a-z] <<< "${PARTNAME}")" = "$(tr [A-Z] [a-z] <<< "${NAME}")" ]; then
+        break
+      fi
+      PARTNO=0
+    done
+    if [ ${PARTNO} -eq 0 ]; then
+      errexit "${NAME} partition not found"
+    fi
+  fi
+  echo ""
+  echo "Saving BOOT partition"
+  if [ ! -d "${MNTPATH}/" ]; then
+    mkdir "${MNTPATH}/"
+    if [ $? -ne 0 ]; then
+      errexit "Unable to make partition mount point"
+    fi
+  fi
+  mount --bind / "${MNTPATH}/"
+  if [ $? -ne 0 ]; then
+    errexit "Unable to bind / to ${MNTPATH}/"
+  fi
+  MNTED=TRUE
+  getboot
+  echo "$(fatlabel ${DEVICE_P}${PART_NOS[0]} | sed -n '$p')" > "${BOOTMNT}/mb-bl"
+  find "${BOOTMNT2}" -mindepth 1 -delete
+  cp -p -r -T "${BOOTMNT}" "${BOOTMNT2}"
+  umntpart
+  echo ""
+  echo "Restoring BOOT partition"
+  if [ $(grep -c "\s\+/boot\S*\s\+vfat\s\+defaults,flush" /etc/fstab) -ne 0 ]; then
+    FLUSH=TRUE
+    sed -i "s|\(\s\+/boot\S*\s\+vfat\s\+defaults\),flush|\1|" /etc/fstab
+    umount "${BOOTMNT}"
+    mount "${BOOTMNT}"
+  else
+    FLUSH=FALSE
+  fi
+  mntpart "${DEVICE_P}${PARTNO}"
+  find "${BOOTMNT}" -mindepth 1 -delete
+  cp --preserve=timestamps -r -T "${BOOTMNT2}" "${BOOTMNT}"
+  RETCNT=0
+  while :
+  do
+    sync
+    echo 3 > /proc/sys/vm/drop_caches
+    DIFFS="$(diff -q -r "${BOOTMNT2}" "${BOOTMNT}")"
+    if [ $? -ne 0 ]; then
+      ((RETCNT += 1))
+      echo -e -n "\r[ Failed / Retrying: ${RETCNT} ] "
+      while read SRCDST
+      do
+        cp --preserve=timestamps -T ${SRCDST}
+      done <<< "$(sed -n "s|^Files \(\S\+\) and \(\S\+\) differ$|\1 \2|p" <<< ${DIFFS})"
+    else
+      if [ ${RETCNT} -ne 0 ]; then
+        echo ""
+      fi
+      break
+    fi
+  done
+  PARTUUID="$(blkid ${DEVICE_P}${PARTNO} | sed -n 's|^.*PARTUUID="\(\S\+\)".*|\1|p')"
+  sed -i "/^[[:space:]]*#/!s|^\(.*root=\)\S\+\(\s\+.*\)$|\1PARTUUID=${PARTUUID}\2|" "${BOOTMNT}/cmdline.txt"
+  sed -i "/^[[:space:]]*#/!s|^\S\+\(\s\+/\s\+.*\)$|PARTUUID=${PARTUUID}\1|" "${MNTPATH}/etc/fstab"
+  PARTUUID="$(blkid ${DEVICE_P}${PART_NOS[0]} | sed -n 's|^.*PARTUUID="\(\S\+\)".*|\1|p')"
+  sed -i "/^[[:space:]]*#/!s|^\S\+\(\s\+/boot\S*\s\+vfat\s\+.*\)$|PARTUUID=${PARTUUID}\1|" "${MNTPATH}/etc/fstab"
+  if [ -f "${BOOTMNT}/mb-bl" ]; then
+    BOOTLBL="$(cat ${BOOTMNT}/mb-bl)"
+  else
+    BOOTLBL="bootfs"
+  fi
+  fatlabel "${DEVICE_P}${PART_NOS[0]}" "${BOOTLBL}" &> /dev/null
+  umntpart
+  if [ "${FLUSH}" = "TRUE" ]; then
+    sed -i "s|\(\s\+/boot\S*\s\+vfat\s\+defaults\)|\1,flush|" /etc/fstab
+    umount "${BOOTMNT}"
+    mount "${BOOTMNT}"
+  fi
+  echo ""
+  if [ "${HALT}" = "FALSE" ]; then
+    echo "Rebooting"
+    SDOPT="-r"
+  else
+    echo "Halting"
+    SDOPT="-h"
+  fi
+  echo ""
+  shutdown "${SDOPT}" now
+  sleep 1h
+else
+  DEVICES=($(ls /dev/mmcblk? /dev/nvme?n? /dev/sd? 2> /dev/null | sed -n 's|\(/dev/.*\)|\1|p'))
+  for i in ${!DEVICES[@]}; do
+    if [ "${DEVICES[i]}" != "${ROOT_DEV}" ]; then
+      DEVICE="${DEVICES[i]}"
+      DEVICE_P="${DEVICE}"
+      if [[ "${DEVICE_P}" = "/dev/mmcblk0" || "${DEVICE_P}" =~ ^/dev/nvme[0-9]n1$ ]]; then
+        DEVICE_P+='p'
+      fi
+      PART_NOS=($(ls ${DEVICE_P}* | sed -n "s|${DEVICE_P}\([0-9]\+\)|\1|p"))
+      PART_NOS=($(printf '%s\n' ${PART_NOS[@]} | sort -n))
+      if [ "$(blkid "${DEVICE_P}${PART_NOS[0]}" | sed -n 's|^.* TYPE="\(\S\+\)".*|\1|p')" = "vfat" ]; then
+        if [ "$(blkid "${DEVICE_P}${PART_NOS[1]}" | sed -n 's|^.* TYPE="\(\S\+\)".*|\1|p')" = "ext4" ]; then
+          DEVICES[i]="${DEVICES[i]} ${DEVICES[i]} OFF"
+          continue
+        fi
+      fi
+    fi
+    unset DEVICES[i]
+  done
+  if [ ${#DEVICES[@]} -eq 0 ]; then
+    errexit "No configurable storage devices found"
+  fi
+  DEVICE="$(whiptail --backtitle "MultiBoot" --title "Storage Devices" --notags --radiolist \
+"\nSelect the storage device to configure" $((8 + ${#DEVICES[@]})) ${WM_WIDTH} ${#DEVICES[@]} ${DEVICES[@]} 3>&1 1>&2 2>&3)"
+  if [[ $? -ne 0 || "${DEVICE}" = "" ]]; then
+    errexit "Aborted"
+  fi
+  if [ $(mount | grep -c "^${DEVICE}") -ne 0 ]; then
+    errexit "${DEVICE} is in use (mounted)"
+  fi
+  DEVICE_P="${DEVICE}"
+  if [[ "${DEVICE_P}" = "/dev/mmcblk0" || "${DEVICE_P}" =~ ^/dev/nvme[0-9]n1$ ]]; then
+    DEVICE_P+='p'
+  fi
+  init
+  INITED=FALSE
+  mntpart "${DEVICE_P}1"
+  if [ -f "${MNTPATH}/mb-id" ]; then
+    INITED=TRUE
+  fi
+  umntpart
+  while :
+  do
+    scandisk ""
+    MENU_LIST=()
+    if [ "${INITED}" = "TRUE" ]; then
+      if [[ ${PART_CNT} -lt $((MAX_PART - 1)) && ${FREE_CNT} -ne 0 ]]; then
+        MENU_LIST+=("INSERT Insert")
+      fi
+      if [ ${PART_CNT} -gt 1 ]; then
+        MENU_LIST+=("REMOVE Remove")
+      fi
+      MENU_LIST+=("RESIZE Resize")
+      if [ ${FREE_CNT} -ne 0 ]; then
+        MENU_LIST+=("LOCATE Locate")
+      fi
+      MENU_LIST+=("RENAME Rename")
+      if [ ${PART_CNT} -gt 1 ]; then
+        MENU_LIST+=("SELECT Select")
+      fi
+      if [ "${PTTYPE}" = "dos" ]; then
+        MENU_LIST+=("MBRGPT MBRGPT")
+      fi
+    else
+      MENU_LIST+=("INITIALIZE Initialize")
+    fi
+    ACTION="$(whiptail --backtitle "MultiBoot" --title "Available Actions" --notags --menu \
+"\n${MENU_TEXT}" $((8 + ${TEXT_CNT} + ${#MENU_LIST[@]})) ${WM_WIDTH} ${#MENU_LIST[@]} ${MENU_LIST[@]} 3>&1 1>&2 2>&3)"
+    if [[ $? -ne 0 || "${ACTION}" = "" ]]; then
+      break
+    fi
+    case "${ACTION}" in
+      INSERT)
+        insert
+        ;;
+
+      REMOVE)
+        remove
+        ;;
+
+      RESIZE)
+        resize
+        ;;
+
+      LOCATE)
+        locate
+        ;;
+
+      RENAME)
+        rename
+        ;;
+
+      SELECT)
+        select_
+        ;;
+
+      MBRGPT)
+        mbrgpt
+        ;;
+
+      INITIALIZE)
+        initialize
+        ;;
+    esac
+  done
+fi

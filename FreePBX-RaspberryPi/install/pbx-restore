@@ -1,0 +1,74 @@
+#!/bin/bash
+
+VER_FREEPBX=`cat /var/www/html/admin/modules/framework/module.xml | grep "<version>" | tail -1 | cut -f 2 -d ">" | sed 's|</version||'`
+
+if [ "$1" = "" ]; then
+  echo ""
+  echo "Usage: $0 /path/file.tar.gz"
+  echo ""
+  exit 1
+fi
+
+if [ ! -e "$1" ]; then
+  echo ""
+  echo "Backup file ($1) not found"
+  echo ""
+  exit 1
+fi
+
+echo ""
+echo "Restoring from: $1"
+echo ""
+echo -n "Restore now (y/n)? "
+while read -r -n 1 -s answer; do
+  if [[ ${answer} = [yYnN] ]]; then
+    echo "${answer}"
+    if [[ ${answer} = [yY] ]]; then
+      break
+    else
+      echo ""
+      echo "Aborted"
+      echo ""
+      exit 1
+    fi
+  fi
+done
+LOGPATH="$(realpath $0).log"
+LOGFILE="/tmp/pbx-restore.log"
+echo "Restoring from: $1" > ${LOGFILE}
+echo ""
+echo "Stopping Asterisk / Apache / MySQL"
+echo ""
+fwconsole stop &>> ${LOGFILE}
+service apache2 stop &>> ${LOGFILE}
+service mysql stop &>> ${LOGFILE}
+chattr -R +i /root/* &>> ${LOGFILE}
+chattr +i /var/www/html/index* &>> ${LOGFILE}
+echo "Restoring backup"
+echo ""
+cd /
+tar zxf $1 &>> ${LOGFILE}
+chattr -i /var/www/html/index* &>> ${LOGFILE}
+chattr -R -i /root/* &>> ${LOGFILE}
+sync
+echo "Backup Restored"
+echo ""
+echo "Restarting MySQL / Apache / Asterisk"
+echo ""
+service mysql start &>> ${LOGFILE}
+service apache2 start &>> ${LOGFILE}
+fwconsole start &>> ${LOGFILE}
+mv ${LOGFILE} ${LOGPATH}
+echo "Immediate reboot recommended"
+echo ""
+echo -n "Reboot now (y/n)? "
+while read -r -n 1 -s answer; do
+  if [[ ${answer} = [yYnN] ]]; then
+    echo "${answer}"
+    if [[ ${answer} = [yY] ]]; then
+      shutdown -r now
+    fi
+    break
+  fi
+done
+echo ""

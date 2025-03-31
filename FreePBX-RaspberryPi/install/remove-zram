@@ -1,0 +1,37 @@
+#!/bin/bash
+
+if [ ! -e /etc/zram ]; then
+  echo ""
+  echo "ZRAM not installed"
+  echo ""
+  exit 1
+fi
+echo ""
+echo -n "Remove ZRAM (y/n)? "
+while read -r -n 1 -s answer; do
+  if [[ ${answer} = [yYnN] ]]; then
+    echo "${answer}"
+    if [[ ${answer} = [yY] ]]; then
+      break
+    else
+      echo ""
+      echo "Aborted"
+      echo ""
+      exit 1
+    fi
+  fi
+done
+CORES=$(nproc --all)
+CORE=0
+while [ ${CORE} -lt ${CORES} ]; do
+  swapoff /dev/zram${CORE}
+  (( CORE += 1 ))
+done
+wait
+sleep .5
+modprobe --remove zram
+sed -i '/zram/d' /etc/rc.local
+rm /etc/zram
+/etc/init.d/dphys-swapfile stop > /dev/null
+/etc/init.d/dphys-swapfile start > /dev/null
+echo ""

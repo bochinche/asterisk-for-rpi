@@ -1,0 +1,114 @@
+*nat
+:PREROUTING ACCEPT [0:0]
+:POSTROUTING ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+COMMIT
+*mangle
+:PREROUTING ACCEPT [0:0]
+:INPUT ACCEPT [0:0]
+:FORWARD ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+:POSTROUTING ACCEPT [0:0]
+COMMIT
+*filter
+:INPUT DROP [0:0]
+:FORWARD ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+-A INPUT -i lo -j ACCEPT
+-A INPUT -p tcp -m tcp --tcp-flags ACK ACK -j ACCEPT
+-A INPUT -m state --state ESTABLISHED -j ACCEPT
+-A INPUT -m state --state RELATED -j ACCEPT
+-A INPUT -p udp -m udp --sport 53 --dport 1024:65535 -j ACCEPT
+-A INPUT -p icmp -m icmp --icmp-type 0 -j ACCEPT
+-A INPUT -p icmp -m icmp --icmp-type 3 -j ACCEPT
+-A INPUT -p icmp -m icmp --icmp-type 4 -j ACCEPT
+-A INPUT -p icmp -m icmp --icmp-type 11 -j ACCEPT
+-A INPUT -p icmp -m icmp --icmp-type 12 -j ACCEPT
+-A INPUT -p tcp -m tcp --dport 113 -j ACCEPT
+-A INPUT -p tcp -m tcp --dport 1723 -j ACCEPT
+-A INPUT -p udp -m udp --dport 4569 -j ACCEPT
+# -A INPUT -p udp -m udp --dport 10000:20000 -j ACCEPT
+-A INPUT -p tcp -m tcp --dport 32976 -j ACCEPT
+-A INPUT -p tcp -m tcp --dport 4445 -j ACCEPT
+-A INPUT -p udp -m udp --dport 123 -j ACCEPT
+-A INPUT -p udp -m udp --dport 69 -j ACCEPT
+-A INPUT -p tcp -m tcp --dport 9022 -j ACCEPT
+-A INPUT -p udp -m udp --dport 5353 -j ACCEPT
+# Trusted SIP Providers
+-A INPUT -s 64.2.142.215/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 64.2.142.216/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 64.2.142.9/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 64.2.142.17/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 64.2.142.18/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 64.2.142.29/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 64.2.142.87/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 64.2.142.106/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 64.2.142.107/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 64.2.142.109/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 64.2.142.111/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 64.2.142.187/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 64.2.142.188/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 64.2.142.189/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 64.2.142.190/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 64.2.142.214/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 64.2.142.26/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 199.101.184.146/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 174.34.146.162/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 173.208.83.50/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 74.54.54.178/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 209.62.1.2/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 67.215.241.250/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 74.63.41.218/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 69.147.236.82/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 68.233.226.97/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 67.205.74.184/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 67.205.74.187/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 174.137.63.206/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 174.137.63.202/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 5.77.36.136/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 199.87.144.0/21 -p udp -m multiport --dports 5060:5080,4569 -j ACCEPT
+-A INPUT -s 204.11.192.0/22 -p udp -m multiport --dports 5060:5080,4569 -j ACCEPT
+-A INPUT -s 204.155.28.10/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 64.136.174.24/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 64.136.174.24/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 64.34.181.47/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 69.90.174.98/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 64.251.23.244/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 85.17.148.32/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 63.211.239.14/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 63.247.78.218/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 8.3.252.23/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 8.14.120.23/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 8.17.37.23/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 66.54.140.46/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 66.54.140.47/32 -p udp -m multiport --dports 5060:5069,4569 -j ACCEPT
+-A INPUT -s 85.17.186.7/32 -p udp -m multiport --dports 5060:5069 -j ACCEPT
+-A INPUT -s 81.23.228.129/32 -p udp -m multiport --dports 5060:5069 -j ACCEPT
+-A INPUT -s 67.228.182.2/32 -p udp -m multiport --dports 5060:5069 -j ACCEPT
+-A INPUT -s 64.62.236.143/32 -p udp -m multiport --dports 5060:5069 -j ACCEPT
+-A INPUT -s 24.211.64.206/32 -p udp -m multiport --dports 5060:5069 -j ACCEPT
+-A INPUT -s 199.30.56.194/32 -p udp -m multiport --dports 5060:5069 -j ACCEPT
+-A INPUT -s 209.216.15.70/32 -p udp -m multiport --dports 5060:5069 -j ACCEPT
+-A INPUT -s 209.216.2.211/32 -p udp -m multiport --dports 5060:5069 -j ACCEPT
+-A INPUT -s 184.154.97.11/32 -p udp -m multiport --dports 5060:5069 -j ACCEPT
+-A INPUT -s 65.254.44.194/32 -p udp -m multiport --dports 5060:5069 -j ACCEPT
+-A INPUT -s 74.81.71.18/32 -p udp -m multiport --dports 5060:5069 -j ACCEPT
+-A INPUT -s 50.22.101.14/32 -p udp -m multiport --dports 5060:5069 -j ACCEPT
+-A INPUT -s 67.212.84.21/32 -p udp -m multiport --dports 5060:5069 -j ACCEPT
+-A INPUT -s 176.9.39.206/32 -p udp -m multiport --dports 5060:5069 -j ACCEPT
+-A INPUT -s 72.9.149.25/32 -p udp -m multiport --dports 5060:5069 -j ACCEPT
+-A INPUT -s 50.22.102.242/32 -p udp -m multiport --dports 5060:5069 -j ACCEPT
+-A INPUT -s 98.254.157.185/32 -p udp -m multiport --dports 5060:5069 -j ACCEPT
+-A INPUT -s 178.63.143.236/32 -p udp -m multiport --dports 5060:5069 -j ACCEPT
+-A INPUT -s 98.254.157.185/32 -p udp -m multiport --dports 5060:5069 -j ACCEPT
+-A INPUT -s 64.2.142.26/32 -p udp -m multiport --dports 5060:5069 -j ACCEPT
+-A INPUT -s 81.23.228.150/32 -p udp -m multiport --dports 5060:5069 -j ACCEPT
+-A INPUT -s 81.23.228.150/32 -p tcp -m tcp --dport 5060:5069 -j ACCEPT
+# End Trusted SIP Providers
+# Added (ipt-add) Entries
+# Private (LAN) IP Addresses
+-A INPUT -s 10.0.0.0/8 -j ACCEPT
+-A INPUT -s 127.0.0.0/8 -j ACCEPT
+-A INPUT -s 172.16.0.0/12 -j ACCEPT
+-A INPUT -s 192.168.0.0/16 -j ACCEPT
+COMMIT

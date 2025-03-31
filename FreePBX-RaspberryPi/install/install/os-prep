@@ -1,0 +1,332 @@
+#!/bin/bash
+
+trap '{ stty sane; printf "\n\nAborting\n\n"; exit 1; }' SIGINT SIGTERM
+
+pistatus()
+{
+  local STATUS=0
+
+  STATUS=$(vcgencmd get_throttled | sed -n 's|^throttled=\(.*\)|\1|p')
+  if [[ ${STATUS} -ne 0 ]]; then
+    if [ $((${STATUS} & 0x00001)) -ne 0 ]; then
+      echo "Power is currently Under Voltage"
+    elif [ $((${STATUS} & 0x10000)) -ne 0 ]; then
+      echo "Power has previously been Under Voltage"
+    fi
+    if [ $((${STATUS} & 0x00002)) -ne 0 ]; then
+      echo "ARM Frequency is currently Capped"
+    elif [ $((${STATUS} & 0x20000)) -ne 0 ]; then
+      echo "ARM Frequency has previously been Capped"
+    fi
+    if [ $((${STATUS} & 0x00004)) -ne 0 ]; then
+      echo "CPU is currently Throttled"
+    elif [ $((${STATUS} & 0x40000)) -ne 0 ]; then
+      echo "CPU has previously been Throttled"
+    fi
+    if [ $((${STATUS} & 0x00008)) -ne 0 ]; then
+      echo "Currently at Soft Temperature Limit"
+    elif [ $((${STATUS} & 0x80000)) -ne 0 ]; then
+      echo "Previously at Soft Temperature Limit"
+    fi
+    echo ""
+  fi
+}
+
+# Ensure root User
+if [ $(id -u) -ne 0 ]; then
+  echo ""
+  echo "Must be run as root user: sudo $0"
+  echo ""
+  exit 1
+fi
+
+# Delete Profile Script
+if [ -f /etc/profile.d/os-prep-ps.sh ]; then
+  rm /etc/profile.d/os-prep-ps.sh
+fi
+
+# Check Operating System
+OSVER="$(sed -n 's|^VERSION=".*(\(.*\))"|\1|p' /etc/os-release)"
+if [[ "${OSVER}" != "buster" && "${OSVER}" != "bullseye" && "${OSVER}" != "bookworm" ]]; then
+  echo ""
+  echo "Unsupported operating system: ${OSVER}"
+  echo ""
+  exit 1
+fi
+
+# Display Storage Usage
+echo ""
+df
+echo ""
+
+# Wait For Time Synchronization
+COUNT=0
+while [ ! -f "/run/systemd/timesync/synchronized" ]
+do
+  echo -n "."
+  (( COUNT += 1 ))
+  sleep 1
+done
+while [ ${COUNT} -ne 0 ]
+do
+  echo -n -e "\b \b"
+  (( COUNT -= 1 ))
+done
+
+# Wait For apt To Finish
+while :
+do
+  ps -A | grep apt &> /dev/null
+  if [ $? -ne 0 ];then
+    break
+  else
+    sleep 1
+  fi
+done
+apt-get -y --allow-releaseinfo-change update
+
+# Get Program Path
+PGMPATH=$(realpath $0)
+
+# Get BOOT partition mount point
+BOOTMNT="$(sed -n 's|^\S\+\s\+\(/boot\S*\)\s\+.*$|\1|p' /etc/fstab)"
+
+echo ""
+echo ""
+if [ "$1" = "" ]; then
+  echo "O/S Preparation: Phase 1"
+  echo ""
+
+  # Extract Installation Archive
+  if [ ! -f ${PGMPATH}.tar.gz ]; then
+    echo ""
+    echo "${PGMPATH}.tar.gz is missing"
+    echo ""
+    exit 1
+  fi
+  tar xfz ${PGMPATH}.tar.gz -C /root
+  chmod 755 /root/*
+
+  # Set user Password
+  if [ "${SUDO_USER}" != "" ]; then
+    echo ""
+    echo "Set ${SUDO_USER} User Password:"
+    echo ""
+    passwd "${SUDO_USER}"
+  fi
+
+  if [ $(tail -n 1 /etc/profile | grep -c echo) -eq 0 ]; then
+    echo "echo" >> /etc/profile
+  fi
+
+  # Set root Password
+  echo ""
+  echo "Set root User Password:"
+  echo ""
+  passwd root
+
+  # Enable SSH Login For root User
+  sed -i 's/^#PermitRootLogin prohibit-password$/PermitRootLogin yes/' /etc/ssh/sshd_config
+  systemctl restart ssh
+
+  # Create Profile Script
+  cat <<EOF > /etc/profile.d/os-prep-ps.sh
+#!/bin/bash
+
+ps cax | grep os-prep-ps.sh > /dev/null
+if [[ \$? -ne 0 && \$(id -u) -eq 0 ]]; then
+  ${PGMPATH} --phase2
+fi
+EOF
+
+  # Force Gen 3.0 speeds
+  if [ $(grep -c "^dtparam=pciex1_gen=3$" "${BOOTMNT}/config.txt") -eq 0 ]; then
+    sed -i '1s/^/dtparam=pciex1_gen=3\n\n/' "${BOOTMNT}/config.txt"
+    sed -i '1s/^/# Force Gen 3.0 speeds\n/' "${BOOTMNT}/config.txt"
+  fi
+
+  # Enable the PCIe external connector
+  if [ $(grep -c "^dtparam=pciex1$" "${BOOTMNT}/config.txt") -eq 0 ]; then
+    sed -i '1s/^/dtparam=pciex1\n\n/' "${BOOTMNT}/config.txt"
+    sed -i '1s/^/# Enable the PCIe external connector\n/' "${BOOTMNT}/config.txt"
+  fi
+
+  # Enable RTC Battery Trickle Charging
+  if [ $(grep -c dtparam=rtc_bbat_vchg=3000000 "${BOOTMNT}/config.txt") -eq 0 ]; then
+    sed -i '1s/^/dtparam=rtc_bbat_vchg=3000000\n\n/' "${BOOTMNT}/config.txt"
+  fi
+
+  # Enable Pushbutton Shutdown/Startup
+  if [ $(grep -c dtoverlay=gpio-shutdown "${BOOTMNT}/config.txt") -eq 0 ]; then
+    sed -i '1s/^/dtoverlay=gpio-shutdown\n\n/' "${BOOTMNT}/config.txt"
+  fi
+
+  # Set GPU Memory To 32MB
+  if [ $(grep -c gpu_mem= "${BOOTMNT}/config.txt") -eq 0 ]; then
+    sed -i '1s/^/gpu_mem=32\n\n/' "${BOOTMNT}/config.txt"
+  fi
+
+  # Enable UART
+  if [ $(grep -c enable_uart=1 "${BOOTMNT}/config.txt") -eq 0 ]; then
+    sed -i '1s/^/uart_2ndstage=1\n\n/' "${BOOTMNT}/config.txt"
+    sed -i '1s/^/enable_uart=1\n/' "${BOOTMNT}/config.txt"
+  fi
+
+  # Set Hostname / Set Localisations / Expand Filesystem
+  if [ -f "/sys/firmware/devicetree/base/system/linux,revision" ]; then
+    BDINFO="$(od -v -An -t x1 /sys/firmware/devicetree/base/system/linux,revision | tr -d ' \n')"
+  elif grep -q Revision /proc/cpuinfo; then
+    BDINFO="$(sed -n '/^Revision/s/^.*: \(.*\)/\1/p' < /proc/cpuinfo)"
+  elif command -v vcgencmd > /dev/null; then
+    BDINFO="$(vcgencmd otp_dump | grep '30:' | sed 's/.*://')"
+  else
+    errexit "Raspberry Pi board info not found"
+  fi
+  BDCHIP=$(((0x${BDINFO} >> 12) & 15))
+  if [[ ${BDCHIP} = 3 || ${BDCHIP} = 4 ]]; then
+    RPI_45=TRUE
+  else
+    RPI_45=FALSE
+  fi
+  ROOT_PART="$(mount | sed -n 's|^/dev/\(.*\) on / .*|\1|p')"
+  if [ "${ROOT_PART}" = "mmcblk0p2" ]; then
+    if [ "${RPI_45}" = "FALSE" ]; then
+      sed -i '/^[[:space:]]*#/!s|root=\S\+\s|root=/dev/mmcblk0p2 |' "${BOOTMNT}/cmdline.txt"
+      sed -i '/^[[:space:]]*#/!s|^PARTUUID=........-0|/dev/mmcblk0p|' /etc/fstab
+    fi
+    raspi-config
+  else
+    if [ -b /dev/mmcblk0 ]; then
+      if [ "${RPI_45}" = "FALSE" ]; then
+        sed -i "/^[[:space:]]*#/!s|^\S\+\(\s\+/boot\S*\s\+vfat\s\+.*\)$|/dev/mmcblk0p1\1|" /etc/fstab
+      fi
+    fi
+    ROOT_DEV="$(sed 's/[0-9]\+$//' <<< "${ROOT_PART}")"
+    cp /usr/bin/raspi-config /tmp/raspi-config-usb-tmp
+    sed -i -E "s/mmcblk0p?/${ROOT_DEV}/" /tmp/raspi-config-usb-tmp
+    sed -i 's|    resize2fs /dev/$ROOT_PART &&|    ROOT_DEV=\\$(findmnt / -o source -n) \&\&\n    resize2fs \\$ROOT_DEV \&\&|' /tmp/raspi-config-usb-tmp
+    /tmp/raspi-config-usb-tmp
+    rm /tmp/raspi-config-usb-tmp
+  fi
+
+  # Reboot
+  pistatus
+  shutdown -r now
+elif [ "$1" = "--phase2" ]; then
+  echo "O/S Preparation: Phase 2"
+  echo ""
+
+  # Upgrade Raspberry Pi OS
+  echo ""
+  echo "Upgrading Raspberry Pi OS"
+  if [ -e /etc/apt/listchanges.conf ]; then
+    sed -i 's/frontend=pager/frontend=text/' /etc/apt/listchanges.conf
+  fi
+  apt-get -y upgrade
+  apt-get -y dist-upgrade
+  if [ -e /etc/apt/listchanges.conf ]; then
+    sed -i 's/frontend=text/frontend=pager/' /etc/apt/listchanges.conf
+  fi
+  echo "Updating/Upgrading completed"
+  echo ""
+
+  # Create Profile Script
+  cat <<EOF > /etc/profile.d/os-prep-ps.sh
+#!/bin/bash
+
+ps cax | grep os-prep-ps.sh > /dev/null
+if [[ \$? -ne 0 && \$(id -u) -eq 0 ]]; then
+  ${PGMPATH} --phase3
+fi
+EOF
+
+  # Reboot
+  pistatus
+  shutdown -r now
+elif [ "$1" = "--phase3" ]; then
+  echo "O/S Preparation: Phase 3"
+  echo ""
+  echo ""
+
+  # Regenerate SSH Keys
+  modinfo bcm2708-rng &> /dev/null
+  if [ $? -eq 0 ]; then
+    echo "BCM2708 H/W Random Number Generator (RNG) driver is installed"
+    modprobe bcm2708-rng
+    if [ $(grep -c bcm2708-rng /etc/modules) -eq 0 ]; then
+      echo "bcm2708-rng" >> /etc/modules
+    fi
+  else
+    echo "BCM2708 H/W Random Number Generator (RNG) driver is not installed"
+  fi
+  dpkg -s rng-tools &> /dev/null
+  INSTALLED=$?  
+  apt-get -y install rng-tools
+  if [ ${INSTALLED} -ne 0 ]; then
+    echo "Waiting while system entropy pool is replenished"
+    sleep 15
+  fi
+  rm /etc/ssh/ssh_host_*
+  dpkg-reconfigure openssh-server
+  systemctl restart ssh
+
+  # Patch /sbin/dphys-swapfile for f2fs
+  if [ $(grep -c 'if \[ $? -eq 0 ]; then' /sbin/dphys-swapfile) -ne 0 ]; then
+    cp /sbin/dphys-swapfile /sbin/dphys-swapfile_orig
+    sed -i 's|#! /bin/sh|#!/bin/bash|' /sbin/dphys-swapfile
+    sed -i 's|      if \[ $? -eq 0 ]; then|      if [[ $? -eq 0 \&\& "$(mount \| sed -n '\''s\|^.* on / type \\(\\S\\+\\) .*\|\\1\|p'\'')" != "f2fs" ]]; then|' /sbin/dphys-swapfile
+  fi
+
+  # Install bc, file, gdisk, ntfs-3g, and rsync
+  apt-get -y install bc file gdisk ntfs-3g rsync
+
+  # Suppress Sap Driver Initialization
+  sed -i 's|^ExecStart=/usr/lib/bluetooth/bluetoothd$|ExecStart=/usr/lib/bluetooth/bluetoothd --noplugin=sap|' /lib/systemd/system/bluetooth.service
+
+  # Create Profile Script
+  cat <<EOF > /etc/profile.d/os-prep-ps.sh
+#!/bin/bash
+
+ps cax | grep os-prep-ps.sh > /dev/null
+if [[ \$? -ne 0 && \$(id -u) -eq 0 ]]; then
+  ${PGMPATH} --phase4
+fi
+EOF
+
+  # Reboot
+  pistatus
+  shutdown -r now
+elif [ "$1" = "--phase4" ]; then
+  echo "O/S Preparation: Phase 4"
+  echo ""
+  echo ""
+
+  mv /root/timesync-wait.sh /etc/profile.d/
+  cp /usr/bin/raspi-config /usr/bin/raspi-config_orig
+  sed -i 's/\"root\"/""/' /usr/bin/raspi-config
+  if [[ "$(uname -m)" = "aarch64" && -h /sbin/halt && -h /sbin/poweroff ]]; then
+    mv /sbin/halt /sbin/halt_orig
+    mv /sbin/poweroff /sbin/poweroff_orig
+    cat <<EOF > /sbin/halt
+#!/bin/bash
+
+/sbin/poweroff_orig
+EOF
+    cat <<EOF > /sbin/poweroff
+#!/bin/bash
+
+/sbin/halt_orig
+EOF
+    chmod +x /sbin/halt /sbin/poweroff
+  fi
+
+  # Cleanup
+  apt-get -y autoremove
+  apt-get -y clean
+  rm -r /boot.bak/ &> /dev/null
+  rm ${PGMPATH}.tar.gz
+  pistatus
+  echo "O/S Preparation Complete"
+  echo ""
+  rm "${PGMPATH}"
+fi

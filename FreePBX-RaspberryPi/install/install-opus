@@ -1,0 +1,39 @@
+#!/bin/bash
+
+echo ""
+echo -n "Install OPUS codec (y/n)? "
+while read -r -n 1 -s answer; do
+  if [[ ${answer} = [yYnN] ]]; then
+    echo "${answer}"
+    if [[ ${answer} = [yY] ]]; then
+      break
+    else
+      echo ""
+      echo "Aborted"
+      echo ""
+      exit 1
+    fi
+  fi
+done
+apt-get -y update
+apt-get -y install libopusfile-dev
+cd /usr/src/asterisk*
+wget github.com/traud/asterisk-opus/archive/asterisk-13.7.tar.gz
+tar xfz asterisk-13.7.tar.gz
+rm asterisk-13.7.tar.gz
+cp asterisk-opus*/include/asterisk/* include/asterisk/
+cp asterisk-opus*/codecs/* codecs/
+cp asterisk-opus*/res/* res/
+patch -p1 < asterisk-opus*/enable_native_plc.patch
+contrib/scripts/get_mp3_source.sh
+./configure --with-pjproject-bundled --with-jansson-bundled --with-bluetooth
+make menuselect.makeopts
+menuselect/menuselect --enable codec_opus_open_source menuselect.makeopts
+menuselect/menuselect --enable format_mp3 --enable chan_mobile --enable app_macro menuselect.makeopts
+make
+fwconsole stop
+make install
+fwconsole start
+echo ""
+echo "OPUS codec installed"
+echo ""

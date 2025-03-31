@@ -1,0 +1,68 @@
+#!/bin/bash
+
+delete()
+{
+  rm *.gz &> /dev/null
+  rm *.0 &> /dev/null
+  rm *.1 &> /dev/null
+  rm *.2 &> /dev/null
+  rm *.3 &> /dev/null
+  rm *.4 &> /dev/null
+}
+
+cd /var/log
+>auth.log
+>daemon.log
+>debug
+>dmesg
+>kern.log
+>messages
+>syslog
+>user.log
+rm *.err &> /dev/null
+delete
+cd apache2 &> /dev/null
+if [ $? -eq 0 ]; then
+  delete
+  cd ..
+fi
+cd apt &> /dev/null
+if [ $? -eq 0 ]; then
+  delete
+  cd ..
+fi
+cd asterisk &> /dev/null
+if [ $? -eq 0 ]; then
+  delete
+  cd ..
+fi
+cd cups &> /dev/null
+if [ $? -eq 0 ]; then
+  delete
+  cd ..
+fi
+cd exim4 &> /dev/null
+if [ $? -eq 0 ]; then
+  delete
+  cd ..
+fi
+cd hylafax &> /dev/null
+if [ $? -eq 0 ]; then
+  delete
+  cd ..
+fi
+cd iaxmodem &> /dev/null
+if [ $? -eq 0 ]; then
+  rm * &> /dev/null
+  cd old &> /dev/null
+  if [ $? -eq 0 ]; then
+    rm * &> /dev/null
+    cd ..
+  fi
+  cd ..
+fi
+cd mysql &> /dev/null
+if [ $? -eq 0 ]; then
+  delete
+  cd ..
+fi
